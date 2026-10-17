@@ -1619,6 +1619,9 @@ if not v72 or v70:is_separator(v72) then
                     pcall(function() v73:load(unpacked); end);
                     _G.__NYANZA_LOADING_PRESET = false;
                 end;
+                if v70.home and v70.home.elements and v70.home.elements.watermark_options and v70.home.elements.watermark_options.label and v70.home.elements.watermark_options.label:get() == "snapshot" then
+                    v70.home.elements.watermark_options.label:set("caelestis.lua");
+                end;
                 if v70.other and v70.other.update_sections then
                     pcall(v70.other.update_sections);
                 end;
@@ -1748,6 +1751,9 @@ if not v72 or v70:is_separator(v72) then
                 _G.__NYANZA_LOADING_PRESET = true;
                 pcall(function() setup_obj:load(unpacked); end);
                 _G.__NYANZA_LOADING_PRESET = false;
+            end;
+            if v81.home and v81.home.elements and v81.home.elements.watermark_options and v81.home.elements.watermark_options.label and v81.home.elements.watermark_options.label:get() == "snapshot" then
+                v81.home.elements.watermark_options.label:set("caelestis.lua");
             end;
             if v81.other and v81.other.update_sections then
                 pcall(v81.other.update_sections);
@@ -4644,7 +4650,7 @@ if not v72 or v70:is_separator(v72) then
             pos_y = v28:slider("y", 0, render.screen_size().y, render.screen_size().y - 20), 
             separator_back = v28:label("\a{Small Text}\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128"), 
             font = v28:combo("\v\226\128\162  \rFont", "Default", "Pixel", "Console", "Bold"), 
-            label = v28:input("\v\226\128\162  \rLabel", SCRIPT_VERSION_TAG), 
+            label = v28:input("\v\226\128\162  \rLabel", "caelestis.lua"), 
             button = v28:button("   \v\238\136\134  \rPrint the Instruction to the Chat    ", function(_)
                 print_chat("\004 \002Watermark Commands\001: ");
                 print_chat("\004 \015pre=\001 \226\128\148 Set prefix text");
@@ -4759,6 +4765,10 @@ if not v72 or v70:is_separator(v72) then
             v167.home.elements.watermark_gear = v167.elements.watermark_gear;
         end
 
+        
+        if v167.elements.watermark_options and v167.elements.watermark_options.label and v167.elements.watermark_options.label:get() == "snapshot" then
+            v167.elements.watermark_options.label:set("caelestis.lua");
+        end
         local is_switching_section = false;
         local function update_sections_visibility()
             local sel = v167.section_list:get();
@@ -15411,6 +15421,9 @@ v722:struct("antiaim_data")({
             end;
         end;
         v668.home.elements.watermark_options.label:set_callback(v671, true);
+        if v668.home.elements.watermark_options.label:get() == "snapshot" then
+            v668.home.elements.watermark_options.label:set("caelestis.lua");
+        end
     end
 }):struct("sidebar")({
     setup = function(v672)
