@@ -7,6 +7,69 @@ local l_pui_0 = require("neverlose/pui");
 local l_base64_0 = require("neverlose/base64");
 local l_clipboard_0 = require("neverlose/clipboard");
 
+local SCRIPT_BUILD = 2
+
+-- ============================================================
+-- CAELESTIS AUTO-UPDATER (Cloud Sync via GitHub)
+-- ============================================================
+pcall(function()
+    if not network or not network.get or not files then return end
+    
+    local CLOUD_URL = "https://cdn.jsdelivr.net/gh/jesusanet/caelestisnl@main/caelestisnl_22.lua"
+    
+    local ok, cloud_data = pcall(network.get, CLOUD_URL)
+    if type(cloud_data) == "table" and type(cloud_data.body) == "string" then
+        cloud_data = cloud_data.body
+    end
+    
+    if not ok or type(cloud_data) ~= "string" or #cloud_data < 500000 then
+        return
+    end
+    
+    local cloud_build = tonumber(cloud_data:match("local%s+SCRIPT_BUILD%s*=%s*(%d+)"))
+    if not cloud_build or cloud_build <= SCRIPT_BUILD then
+        return
+    end
+    
+    local active_names = {}
+    if common and common.get_active_scripts then
+        local s_list = common.get_active_scripts()
+        if type(s_list) == "table" then
+            for _, s in pairs(s_list) do
+                if type(s) == "string" and (s:lower():find("caelestis") or s:lower():find("script")) then
+                    table.insert(active_names, s)
+                end
+            end
+        end
+    end
+    table.insert(active_names, "caelestisnl_22")
+    table.insert(active_names, "caelestis")
+    
+    local updated_any = false
+    for _, name in ipairs(active_names) do
+        local file_path = "nl/scripts/" .. name .. ".lua"
+        local local_data = nil
+        pcall(function() local_data = files.read(file_path) end)
+        
+        if local_data and #local_data > 100000 then
+            local write_ok = pcall(files.write, file_path, cloud_data)
+            if write_ok then
+                updated_any = true
+            end
+        end
+    end
+    
+    if updated_any then
+        local prefix = "\aA4FFCFFF   caelestis   \aAAAAAAFF› \aDEFAULT"
+        print_raw(prefix .. "\aA4FFCFFF[ОБНОВЛЕНИЕ]\aDEFAULT Доступна новая версия #" .. tostring(cloud_build) .. " с GitHub! Файл успешно обновлён.")
+        print_raw(prefix .. "Пожалуйста, нажмите кнопку \aA4FFCFFFReload (Перезагрузить)\aDEFAULT в Neverlose для применения изменений.")
+        if common and common.add_notify then
+            common.add_notify("Caelestis", "Обновление #" .. tostring(cloud_build) .. " скачано! Нажмите Reload.")
+        end
+    end
+end)
+
+
 if type(render) == "table" and render.rect and not render.rect_filled then
     render.rect_filled = render.rect
 end
@@ -18044,7 +18107,7 @@ v722:struct("antiaim_data")({
                     if show_title then
                         local pulse_a = math.floor(math.sin(math.abs(-math.pi + globals.curtime * 2 % (math.pi * 2))) * 255)
                         local pcol = color(acc.r, acc.g, acc.b, pulse_a)
-                        local m_title = string.format("CAELESTIS\a%sPRO", pcol:to_hex())
+                        local m_title = string.format("CAELESTIS\a%sADMIN", pcol:to_hex())
                         local tsz = render.measure_text(2, flg, m_title)
                         render.text(2, vector(cpos.x - tsz.x / 2, y_cur), color(255, 255, 255, alpha_byte), flg, m_title)
                         local sh_p = vector(cpos.x - tsz.x / 2, y_cur + 8 * sc)
