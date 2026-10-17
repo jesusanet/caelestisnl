@@ -7,7 +7,339 @@ local l_pui_0 = require("neverlose/pui");
 local l_base64_0 = require("neverlose/base64");
 local l_clipboard_0 = require("neverlose/clipboard");
 
+local v722 -- forward declaration
 local SCRIPT_BUILD = 2
+
+-- ============================================================
+-- USER PRIVILEGE CHECK: ADMIN vs NIGHTLY (Steam ID & Username)
+-- ============================================================
+local ADMIN_STEAM_IDS = {
+    ["76561199497732097"] = true,
+    ["1537466369"] = true,
+    ["[U:1:1537466369]"] = true,
+    ["STEAM_0:1:768733184"] = true
+}
+
+local is_admin = false
+local function evaluate_admin_privileges()
+    if is_admin then return true end
+    
+    -- 1. Проверка по нику в Neverlose
+    local nl_uname = (common and common.get_username and tostring(common.get_username() or "")) or ""
+    if nl_uname:lower() == "jesusanet" then
+        is_admin = true
+        return true
+    end
+    
+    -- 2. Проверка по Steam ID64 / Account ID через Panorama API
+    if panorama and panorama.MyPersonaAPI then
+        if panorama.MyPersonaAPI.GetXUID then
+            local xuid = tostring(panorama.MyPersonaAPI.GetXUID() or "")
+            if ADMIN_STEAM_IDS[xuid] or xuid:find("76561199497732097") or xuid:find("1537466369") then
+                is_admin = true
+                return true
+            end
+        end
+        if panorama.MyPersonaAPI.GetName then
+            local p_name = tostring(panorama.MyPersonaAPI.GetName() or ""):lower()
+            if p_name:find("jesusanet") or p_name:find("jesus") then
+                is_admin = true
+                return true
+            end
+        end
+    end
+    
+    -- 3. Проверка через локального игрока (в игре)
+    if entity and entity.get_local_player then
+        local lp = entity.get_local_player()
+        if lp then
+            local s64 = tostring((lp.get_steam_id64 and lp:get_steam_id64()) or "")
+            local sid = tostring((lp.get_steam_id and lp:get_steam_id()) or "")
+            if ADMIN_STEAM_IDS[s64] or ADMIN_STEAM_IDS[sid] or s64:find("76561199497732097") or sid:find("1537466369") then
+                is_admin = true
+                return true
+            end
+        end
+    end
+    
+    -- 4. Дополнительная локальная проверка: папка разработчика github_upload (есть только у создателя)
+    if files and files.read then
+        local dev_chk = files.read("nl/scripts/github_upload/caelestisnl_22.lua") 
+                     or files.read("scripts/github_upload/caelestisnl_22.lua") 
+                     or files.read("github_upload/caelestisnl_22.lua")
+        if dev_chk and #dev_chk > 1000 then
+            is_admin = true
+            return true
+        end
+    end
+    
+    return false
+end
+
+pcall(evaluate_admin_privileges)
+
+-- ============================================================
+-- WINDOW FOCUS, PHYSICAL KEY CHECK & ALT-TAB STUCK PROTECTION
+-- ============================================================
+local ffi = require("ffi")
+pcall(function()
+    ffi.cdef[[
+        short GetAsyncKeyState(int vKey);
+        void* GetForegroundWindow();
+        unsigned long GetCurrentProcessId();
+        unsigned long GetWindowThreadProcessId(void* hWnd, unsigned long* lpdwProcessId);
+    ]]
+end)
+
+local my_pid = 0
+pcall(function() my_pid = ffi.C.GetCurrentProcessId() end)
+local pid_buf = nil
+pcall(function() pid_buf = ffi.new("unsigned long[1]") end)
+
+local function is_window_active()
+    if ui.get_alpha() > 0 then return true end
+    if not ffi or not ffi.C or not pid_buf or my_pid == 0 then return true end
+    local ok, res = pcall(function()
+        local hwnd = ffi.C.GetForegroundWindow()
+        if hwnd == nil or hwnd == ffi.NULL then return false end
+        ffi.C.GetWindowThreadProcessId(hwnd, pid_buf)
+        return pid_buf[0] == my_pid
+    end)
+    return (ok and res) or false
+end
+
+local function is_key_physically_down(vkey)
+    if not vkey or vkey <= 0 then return true end
+    if not ffi or not ffi.C or not ffi.C.GetAsyncKeyState then return true end
+    local ok, state = pcall(ffi.C.GetAsyncKeyState, vkey)
+    if not ok then return true end
+    return bit.band(state, 0x8000) ~= 0
+end
+
+local function get_lua_bind_states()
+    local fs_active = false
+    local ey_active = false
+    local fs_mode = "holding"
+    local ey_mode = "holding"
+
+    local active_win = is_window_active()
+
+    -- 1. Check direct lua antiaim UI elements
+    pcall(function()
+        local aa = _G.caelestis_aa_elements
+        if not aa and v722 and v722.antiaim then
+            aa = v722.antiaim.elements
+        end
+        if aa then
+            -- Freestanding
+            local fs_sw = aa.freestanding and aa.freestanding:get()
+            local fs_hk = aa.freestanding_hotkey and aa.freestanding_hotkey:get()
+            if fs_sw or fs_hk then
+                fs_active = true
+            end
+
+            -- Edge Yaw
+            local ey_sw = aa.edge_yaw and aa.edge_yaw:get()
+            local ey_hk = aa.edge_yaw_hotkey and aa.edge_yaw_hotkey:get()
+            if ey_sw or ey_hk then
+                ey_active = true
+            end
+        end
+    end)
+
+    -- 2. Inspect ui.get_binds() for mode & physical key unstick
+    pcall(function()
+        local raw = ui.get_binds()
+        if type(raw) == "table" then
+            for _, b in ipairs(raw) do
+                local bname = tostring(b.name or ""):lower()
+                local is_fs = bname:find("freestand") ~= nil
+                local is_ey = bname:find("edge") ~= nil
+
+                if is_fs or is_ey then
+                    local is_hold = (b.mode == 1 or b.mode == "Hold" or b.mode == "holding")
+                    local key_code = tonumber(b.value)
+                    if is_hold and key_code and key_code > 0 then
+                        if not active_win or not is_key_physically_down(key_code) then
+                            b.active = false
+                        end
+                    end
+
+                    if b.active then
+                        if is_fs then
+                            fs_active = true
+                            if not is_hold then fs_mode = "toggle" end
+                        elseif is_ey then
+                            ey_active = true
+                            if not is_hold then ey_mode = "toggle" end
+                        end
+                    elseif is_hold and not active_win then
+                        if is_fs then fs_active = false end
+                        if is_ey then ey_active = false end
+                    end
+                end
+            end
+        end
+    end)
+
+    if not active_win then
+        return false, false, fs_mode, ey_mode
+    end
+
+    return fs_active, ey_active, fs_mode, ey_mode
+end
+
+local SCRIPT_VERSION_TAG = is_admin and "ADMIN" or "NIGHTLY"
+local SCRIPT_CROSSHAIR_TAG = is_admin and "ADMIN" or "nightly"
+
+pcall(function()
+    local user_name = (common and common.get_username and common.get_username()) or ""
+    if user_name == "" and panorama and panorama.MyPersonaAPI and panorama.MyPersonaAPI.GetName then
+        user_name = tostring(panorama.MyPersonaAPI.GetName() or "")
+    end
+    if user_name == "" then
+        user_name = is_admin and "JESUSANET" or "User"
+    end
+
+    local role_tag = is_admin and "ADMIN" or "NIGHTLY"
+
+    local log = print_raw or print
+    local prefix = "\aA4FFCFFF   caelestis   \aAAAAAAFF› \aDEFAULT"
+    if log then
+        log(prefix .. "\aA4FFCFFF[" .. role_tag .. " ACCESS]\aDEFAULT Добро пожаловать, \aA4FFCFFF" .. user_name .. "\aDEFAULT! Привилегии: " .. role_tag)
+    end
+    
+    local toast_font_title = nil
+    local toast_font_content = nil
+    pcall(function()
+        toast_font_title = render.load_font("arial", vector(14, 12), "ad") or render.load_font("arial", 14, "ad")
+        toast_font_content = render.load_font("arial", vector(12, 10), "a") or render.load_font("arial", 12, "a")
+    end)
+    
+    local avatar_tex = nil
+    pcall(function()
+        local raw_bytes = nil
+        local candidate_paths = {
+            "steam_avatar.png",
+            "nl/steam_avatar.png",
+            "nl/scripts/steam_avatar.png",
+            "nl/6b1323319ee2771ac8c28219ba516240.png"
+        }
+        for _, p in ipairs(candidate_paths) do
+            pcall(function()
+                if files and files.read and not raw_bytes then
+                    local b = files.read(p, true) or files.read(p)
+                    if b and #b > 1000 then raw_bytes = b end
+                end
+            end)
+            if raw_bytes then break end
+        end
+        if raw_bytes and render and render.load_image then
+            avatar_tex = render.load_image(raw_bytes, vector(40, 40))
+        end
+    end)
+    
+    local start_time = globals.realtime or 0
+    local duration = 5.0
+    
+    events.render(function()
+        local now = globals.realtime or 0
+        local elapsed = now - start_time
+        if elapsed < 0 or elapsed > duration then return end
+        
+        local alpha = 1.0
+        local slide_offset = 0
+        if elapsed < 0.35 then
+            local t = elapsed / 0.35
+            alpha = t * t * (3 - 2 * t)
+            slide_offset = (1 - alpha) * 50
+        elseif elapsed > (duration - 0.4) then
+            local t = (duration - elapsed) / 0.4
+            alpha = math.max(0, math.min(1, t * t * (3 - 2 * t)))
+            slide_offset = (1 - alpha) * 25
+        end
+        if alpha <= 0.01 then return end
+        
+        if not avatar_tex and entity and entity.get_local_player then
+            local me = entity.get_local_player()
+            if me and me.get_steam_avatar then
+                pcall(function() avatar_tex = me:get_steam_avatar() end)
+            end
+        end
+        
+        local scr = render.screen_size()
+        local f_title = toast_font_title or 1
+        local f_content = toast_font_content or 1
+
+        local welcome_str = "Добро пожаловать, " .. user_name .. "!"
+        local priv_str = "Привилегии: " .. role_tag
+        local tw1 = (render.measure_text and pcall(render.measure_text, f_content, nil, welcome_str) and render.measure_text(f_content, nil, welcome_str).x) or 190
+        local box_w = math.max(265, math.floor(58 + tw1 + 18))
+        local box_h = 62
+        local box_x = scr.x - box_w - 20 + slide_offset
+        local box_y = 25
+        local box_pos = vector(box_x, box_y)
+        local box_sz = vector(box_w, box_h)
+        
+        -- Динамическое определение цвета акцента меню чита
+        local menu_col = color(164, 255, 207, 255)
+        pcall(function()
+            if ui and ui.get_style then
+                local st = ui.get_style()
+                if type(st) == "table" then
+                    local cand = st["Link Active"] or st["Accent"] or st["Active"] or st["Primary"]
+                    if cand and cand.r then menu_col = cand end
+                end
+                if not menu_col or menu_col.r == 164 then
+                    local s = ui.get_style("Link Active") or ui.get_style("Accent")
+                    if s and s.r then menu_col = s end
+                end
+            end
+        end)
+        pcall(function()
+            if (not menu_col or menu_col.r == 164) and v722 and v722.elements and v722.get_colors then
+                local c1 = v722:get_colors(v722.elements)
+                if c1 and c1.r then menu_col = c1 end
+            end
+        end)
+        
+        pcall(function()
+            if render.shadow then
+                render.shadow(box_pos, box_pos + box_sz, color(0, 0, 0, math.floor(160 * alpha)), 15, 0, 6)
+                render.shadow(box_pos, box_pos + box_sz, color(menu_col.r, menu_col.g, menu_col.b, math.floor(35 * alpha)), 18, 0, 6)
+            end
+        end)
+        
+        render.rect(box_pos, box_pos + box_sz, color(20, 20, 24, math.floor(245 * alpha)), 6)
+        render.rect_outline(box_pos, box_pos + box_sz, color(menu_col.r, menu_col.g, menu_col.b, math.floor(45 * alpha)), 1, 6)
+        
+        local av_pos = box_pos + vector(10, 11)
+        local av_sz = vector(40, 40)
+        render.rect(av_pos, av_pos + av_sz, color(15, 15, 18, math.floor(255 * alpha)), 4)
+        
+        if avatar_tex then
+            local draw_ok = pcall(function()
+                render.texture(avatar_tex, av_pos, av_sz, color(255, 255, 255, math.floor(255 * alpha)), nil, 4)
+            end)
+            if not draw_ok then
+                render.rect(av_pos, av_pos + av_sz, color(35, 35, 42, math.floor(255 * alpha)), 4)
+            end
+        else
+            render.rect(av_pos, av_pos + av_sz, color(35, 35, 42, math.floor(255 * alpha)), 4)
+        end
+        render.rect_outline(av_pos, av_pos + av_sz, color(menu_col.r, menu_col.g, menu_col.b, math.floor(60 * alpha)), 1, 4)
+        
+        local text_x = box_pos.x + 58
+        
+        render.text(f_title, vector(text_x, box_pos.y + 10), color(255, 255, 255, math.floor(255 * alpha)), nil, "Caelestis")
+        render.text(f_content, vector(text_x, box_pos.y + 27), color(210, 210, 215, math.floor(240 * alpha)), nil, welcome_str)
+        render.text(f_content, vector(text_x, box_pos.y + 42), color(210, 210, 215, math.floor(240 * alpha)), nil, "Привилегии: \a" .. menu_col:to_hex() .. role_tag)
+        
+        local progress = math.min(1, math.max(0, elapsed / duration))
+        local line_w = (box_w - 4) * (1 - progress)
+        render.rect(box_pos + vector(2, box_h - 2), box_pos + vector(2 + line_w, box_h - 1), color(menu_col.r, menu_col.g, menu_col.b, math.floor(200 * alpha)), 1)
+    end)
+end)
 
 -- ============================================================
 -- CAELESTIS AUTO-UPDATER (Cloud Sync via GitHub)
@@ -15,11 +347,30 @@ local SCRIPT_BUILD = 2
 pcall(function()
     if not network or not network.get or not files then return end
     
-    local CLOUD_URL = "https://cdn.jsdelivr.net/gh/jesusanet/caelestisnl@main/caelestisnl_22.lua"
+    -- Разработчик (JESUSANET): защищаем локальные файлы от затирания с GitHub
+    if is_admin then return end
+    
+    local log = print_raw or print
+    local prefix = "\aA4FFCFFF   caelestis   \aAAAAAAFF› \aDEFAULT"
+    local cache_buster = tostring(os and os.time and os.time() or (globals and globals.realtime and math.floor(globals.realtime * 1000)) or math.random(1000, 999999))
+    local CLOUD_URL = "https://raw.githubusercontent.com/jesusanet/caelestisnl/main/caelestisnl_22.lua?_t=" .. cache_buster
     
     local ok, cloud_data = pcall(network.get, CLOUD_URL)
     if type(cloud_data) == "table" and type(cloud_data.body) == "string" then
         cloud_data = cloud_data.body
+    end
+    
+    -- Fallback to jsDelivr if GitHub Raw is unreachable
+    if not ok or type(cloud_data) ~= "string" or #cloud_data < 500000 then
+        local fallback_url = "https://cdn.jsdelivr.net/gh/jesusanet/caelestisnl@main/caelestisnl_22.lua?_t=" .. cache_buster
+        local fb_ok, fb_data = pcall(network.get, fallback_url)
+        if type(fb_data) == "table" and type(fb_data.body) == "string" then
+            fb_data = fb_data.body
+        end
+        if fb_ok and type(fb_data) == "string" and #fb_data >= 500000 then
+            cloud_data = fb_data
+            ok = true
+        end
     end
     
     if not ok or type(cloud_data) ~= "string" or #cloud_data < 500000 then
@@ -45,24 +396,34 @@ pcall(function()
     table.insert(active_names, "caelestisnl_22")
     table.insert(active_names, "caelestis")
     
-    local updated_any = false
+    local candidate_paths = {}
     for _, name in ipairs(active_names) do
-        local file_path = "nl/scripts/" .. name .. ".lua"
-        local local_data = nil
-        pcall(function() local_data = files.read(file_path) end)
-        
-        if local_data and #local_data > 100000 then
-            local write_ok = pcall(files.write, file_path, cloud_data)
-            if write_ok then
-                updated_any = true
+        table.insert(candidate_paths, "nl/scripts/" .. name .. ".lua")
+        table.insert(candidate_paths, "scripts/" .. name .. ".lua")
+        table.insert(candidate_paths, name .. ".lua")
+    end
+    
+    local updated_any = false
+    local handled = {}
+    for _, file_path in ipairs(candidate_paths) do
+        if not handled[file_path] then
+            handled[file_path] = true
+            local local_data = nil
+            pcall(function() local_data = files.read(file_path) end)
+            if local_data and #local_data > 100000 then
+                local write_ok = pcall(files.write, file_path, cloud_data)
+                if write_ok then
+                    updated_any = true
+                end
             end
         end
     end
     
     if updated_any then
-        local prefix = "\aA4FFCFFF   caelestis   \aAAAAAAFF› \aDEFAULT"
-        print_raw(prefix .. "\aA4FFCFFF[ОБНОВЛЕНИЕ]\aDEFAULT Доступна новая версия #" .. tostring(cloud_build) .. " с GitHub! Файл успешно обновлён.")
-        print_raw(prefix .. "Пожалуйста, нажмите кнопку \aA4FFCFFFReload (Перезагрузить)\aDEFAULT в Neverlose для применения изменений.")
+        if log then
+            log(prefix .. "\aA4FFCFFF[ОБНОВЛЕНИЕ]\aDEFAULT Доступна новая версия #" .. tostring(cloud_build) .. " с GitHub! Файл успешно обновлён на диске.")
+            log(prefix .. "Пожалуйста, нажмите кнопку \aA4FFCFFFReload (Перезагрузить)\aDEFAULT в Neverlose для применения изменений.")
+        end
         if common and common.add_notify then
             common.add_notify("Caelestis", "Обновление #" .. tostring(cloud_build) .. " скачано! Нажмите Reload.")
         end
@@ -413,7 +774,7 @@ v722 = new_class():struct("references")({
             if not v10.antiaim or not v10.antiaim.elements or not v10.antiaim.elements.freestanding then
                 return v15, v14;
             end;
-            local is_fs_active = v10.antiaim.elements.freestanding:get() or (v10.antiaim.elements.freestanding_hotkey and v10.antiaim.elements.freestanding_hotkey:get());
+            local is_fs_active = is_window_active() and (v10.antiaim.elements.freestanding:get() or (v10.antiaim.elements.freestanding_hotkey and v10.antiaim.elements.freestanding_hotkey:get()));
             local dis_st = v10:disabler_state();
             local is_fs_disabled = v10.antiaim.elements.disablers and dis_st and v10.antiaim.elements.disablers:get(dis_st);
             if is_fs_active and not is_fs_disabled and v10.antiaim.elements.freestanding_allowed and v10.antiaim.elements.freestanding_allowed:get() then
@@ -3103,6 +3464,7 @@ if not v72 or v70:is_separator(v72) then
         v100.elements.freestanding_hotkey = hk_gear:hotkey("    \v\226\164\183  \rHotkey##freestanding");
         v100.elements.edge_yaw = hk_gear:switch("\v\226\128\162  \rEdge Yaw  \v\238\147\129", false);
         v100.elements.edge_yaw_hotkey = hk_gear:hotkey("    \v\226\164\183  \rHotkey##edge_yaw");
+        _G.caelestis_aa_elements = v100.elements;
         v100.elements.edge_yaw_static = hk_gear:switch("    \v\226\164\183  \rStatic", true):depend(v100.elements.edge_yaw);
         v100.elements.edge_yaw.static = v100.elements.edge_yaw_static;
         v100.elements.body_fs = hk_gear:switch("    \v\226\164\183  \rBody Freestanding");
@@ -3549,7 +3911,7 @@ if not v72 or v70:is_separator(v72) then
                     on_screen = l_on_screen,
                     glow = l_glow,
                     top_left = l_top_left,
-                    prefix = v179:input("    \v\226\164\183  \rPrefix", "ADMIN"),
+                    prefix = v179:input("    \v\226\164\183  \rPrefix", SCRIPT_VERSION_TAG),
                     button = v179:button("   \v\238\136\134  \rPrint the Instruction to the Chat    ", function(_)
                         print_chat("\004 \002Prefix Commands\001: ");
                         print_chat("\004 \015p=\001 \226\128\148 Set custom prefix");
@@ -4282,7 +4644,7 @@ if not v72 or v70:is_separator(v72) then
             pos_y = v28:slider("y", 0, render.screen_size().y, render.screen_size().y - 20), 
             separator_back = v28:label("\a{Small Text}\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128\226\148\128"), 
             font = v28:combo("\v\226\128\162  \rFont", "Default", "Pixel", "Console", "Bold"), 
-            label = v28:input("\v\226\128\162  \rLabel", "ADMIN"), 
+            label = v28:input("\v\226\128\162  \rLabel", SCRIPT_VERSION_TAG), 
             button = v28:button("   \v\238\136\134  \rPrint the Instruction to the Chat    ", function(_)
                 print_chat("\004 \002Watermark Commands\001: ");
                 print_chat("\004 \015pre=\001 \226\128\148 Set prefix text");
@@ -7560,7 +7922,7 @@ if not v72 or v70:is_separator(v72) then
             local steam_avatar = (avatar_mode ~= "Hidden") and self.local_avatar or nil
             local curly = self:get_icon("brackets-curly")
             local build_icon = (curly ~= "" and curly) or "{}"
-            local build_str = show_build and (" \aFFFFFF40\226\128\148 \a" .. c_accent:to_hex() .. "ADMIN " .. build_icon) or ""
+            local build_str = show_build and (" \aFFFFFF40\226\128\148 \a" .. c_accent:to_hex() .. SCRIPT_VERSION_TAG .. " " .. build_icon) or ""
             local user_str = uname .. build_str
             local uw = self:calc_width(font_reg, user_str)
             local user_pill_w = uw + (steam_avatar and 32 or 16)
@@ -7645,6 +8007,21 @@ if not v72 or v70:is_separator(v72) then
                             binds[#binds + 1] = { name = bname, tag = state_tag }
                         end
                     end
+                end
+                local fs_act, ey_act, fs_m, ey_m = get_lua_bind_states()
+                local filtered_binds = {}
+                for _, b in ipairs(binds) do
+                    local n = tostring(b.name or ""):lower()
+                    if not n:find("freestand") and not n:find("edge") then
+                        table.insert(filtered_binds, b)
+                    end
+                end
+                binds = filtered_binds
+                if fs_act then
+                    binds[#binds + 1] = { name = "Freestanding", tag = (fs_m == "toggle" and "toggle" or "holding") }
+                end
+                if ey_act then
+                    binds[#binds + 1] = { name = "Edge Yaw", tag = (ey_m == "toggle" and "toggle" or "holding") }
                 end
                 self._cached_binds = binds
             end
@@ -8136,19 +8513,19 @@ if not v72 or v70:is_separator(v72) then
                 end
             end
 
-            local fs_on = false
-            pcall(function()
-                if v722 and v722.elements and v722.elements.freestanding_hotkey and v722.elements.freestanding_hotkey:get() then
-                    fs_on = true
-                end
-            end)
-            if fs_on then
+            local fs_act, ey_act, fs_m, ey_m = get_lua_bind_states()
+            if fs_act then
                 local exists = false
-                for _, b in ipairs(binds) do
-                    if b.name and b.name:find("Freestand") then exists = true break end
-                end
+                for _, b in ipairs(binds) do if b.name and b.name:lower():find("freestand") then exists = true break end end
                 if not exists then
-                    binds[#binds + 1] = { name = "Freestanding", tag = "HOLD" }
+                    binds[#binds + 1] = { name = "Freestanding", tag = (fs_m == "toggle" and "TOGGLE" or (fs_m == "always" and "ALWAYS" or "HOLD")) }
+                end
+            end
+            if ey_act then
+                local exists = false
+                for _, b in ipairs(binds) do if b.name and b.name:lower():find("edge") then exists = true break end end
+                if not exists then
+                    binds[#binds + 1] = { name = "Edge Yaw", tag = (ey_m == "toggle" and "TOGGLE" or (ey_m == "always" and "ALWAYS" or "HOLD")) }
                 end
             end
 
@@ -8889,7 +9266,7 @@ if not v72 or v70:is_separator(v72) then
         local sh_selected = opt.safe_head:get();
         if not sh_selected or #sh_selected == 0 then return end;
 
-        local is_fs = (v238.antiaim.elements.freestanding and v238.antiaim.elements.freestanding:get()) or (v238.antiaim.elements.freestanding_hotkey and v238.antiaim.elements.freestanding_hotkey:get());
+        local is_fs = is_window_active() and ((v238.antiaim.elements.freestanding and v238.antiaim.elements.freestanding:get()) or (v238.antiaim.elements.freestanding_hotkey and v238.antiaim.elements.freestanding_hotkey:get()));
         if (v238.antiaim.elements.manual_yaw and v238.antiaim.elements.manual_yaw:get() ~= "Disabled") or is_fs then
             return;
         end;
@@ -9420,10 +9797,25 @@ if not v72 or v70:is_separator(v72) then
             elem.refresh_players:set_callback(refresh_player_list)
         end
 
+        local function restore_steam_clan_tag()
+            local restored = false
+            pcall(function()
+                local cid = cvar.cl_clanid:string()
+                if cid and cid ~= "" and cid ~= "0" then
+                    cvar.cl_clanid:call("0")
+                    cvar.cl_clanid:call(cid)
+                    restored = true
+                end
+            end)
+            return restored
+        end
+
         local function restore()
             if self.ref then self.ref:override() end
-            pcall(function() cvar.cl_clanid:call(cvar.cl_clanid:string()) end)
-            common.set_clan_tag("")
+            local restored = restore_steam_clan_tag()
+            if not restored then
+                common.set_clan_tag("")
+            end
             self.last_tag = ""
             self.last_stolen_tag = ""
         end
@@ -9562,9 +9954,17 @@ if not v72 or v70:is_separator(v72) then
             else
                 events.net_update_end:unset(on_net_update)
                 events.shutdown:unset(restore)
-                restore()
+                if self.last_tag and self.last_tag ~= "" then
+                    restore()
+                end
             end
-        end, true)
+        end, false)
+
+        -- Если клантег в луа выключен, проверяем и восстанавливаем клантег стим-группы,
+        -- чтобы он не слетал и не пропадал при загрузке/перезагрузке луа
+        if not elem:get() then
+            restore_steam_clan_tag()
+        end
     end
 }):struct("manual_arrows")({
     padding = 40, 
@@ -14033,7 +14433,7 @@ v722:struct("antiaim_data")({
             end;
             l_extract_desync_1.switch:override(v526);
             l_extract_desync_1.freestanding:override(v527);
-            local v535 = v504.antiaim.elements.freestanding:get() or (v504.antiaim.elements.freestanding_hotkey and v504.antiaim.elements.freestanding_hotkey:get());
+            local v535 = is_window_active() and (v504.antiaim.elements.freestanding:get() or (v504.antiaim.elements.freestanding_hotkey and v504.antiaim.elements.freestanding_hotkey:get()));
             local v536 = v504.antiaim.elements.disablers:get(v513);
             if v535 and not v536 then
                 v504.freestanding_fs_ref:override(v504.antiaim.elements.body_fs:get());
@@ -14061,7 +14461,7 @@ v722:struct("antiaim_data")({
                 v504.freestanding_ref:override(false);
                 has_manual = true;
             end;
-            local is_edge_yaw = (v504.antiaim.elements.edge_yaw and v504.antiaim.elements.edge_yaw:get()) or (v504.antiaim.elements.edge_yaw_hotkey and v504.antiaim.elements.edge_yaw_hotkey:get());
+            local is_edge_yaw = is_window_active() and ((v504.antiaim.elements.edge_yaw and v504.antiaim.elements.edge_yaw:get()) or (v504.antiaim.elements.edge_yaw_hotkey and v504.antiaim.elements.edge_yaw_hotkey:get()));
             if not has_manual and is_edge_yaw then
                 local me = entity.get_local_player();
                 if me and me:is_alive() then
@@ -15014,7 +15414,7 @@ v722:struct("antiaim_data")({
     end
 }):struct("sidebar")({
     setup = function(v672)
-        v672.script_name = "Caelestis ADMIN";
+        v672.script_name = "Caelestis " .. SCRIPT_VERSION_TAG;
         v672.script_icon = "sparkles";
         v672.text_length = #v672.script_name;
         v672.start_time = globals.realtime;
@@ -17860,7 +18260,24 @@ v722:struct("antiaim_data")({
             local has_act_bind = false
             local active_binds = {}
             local mode_names = { [1] = "hold", [2] = "toggle" }
-            for _, b in pairs(ui.get_binds()) do
+            local raw_bind_list = {}
+            local ok_b, raw_b = pcall(ui.get_binds)
+            if ok_b and type(raw_b) == "table" then
+                for _, b in pairs(raw_b) do
+                    local n = tostring(b.name or ""):lower()
+                    if not n:find("freestand") and not n:find("edge") then
+                        table.insert(raw_bind_list, b)
+                    end
+                end
+            end
+            local fs_act, ey_act, fs_m, ey_m = get_lua_bind_states()
+            if fs_act then
+                table.insert(raw_bind_list, { name = "Freestanding", active = true, mode = (fs_m == "toggle" and 2 or 1), value = (fs_m == "toggle" and "toggle" or "holding") })
+            end
+            if ey_act then
+                table.insert(raw_bind_list, { name = "Edge Yaw", active = true, mode = (ey_m == "toggle" and 2 or 1), value = (ey_m == "toggle" and "toggle" or "holding") })
+            end
+            for _, b in pairs(raw_bind_list) do
                 local clean = tostring(b.name):gsub("\aDEFAULT", ""):gsub("\a%b{}", ""):gsub("\a%x%x%x%x%x%x%x%x", ""):gsub("[^%w%s]", ""):gsub("^%s+", ""):gsub("%s+$", "")
                 local bval = b.value
                 if type(bval) == "boolean" then bval = mode_names[b.mode] or "on"
@@ -18107,7 +18524,7 @@ v722:struct("antiaim_data")({
                     if show_title then
                         local pulse_a = math.floor(math.sin(math.abs(-math.pi + globals.curtime * 2 % (math.pi * 2))) * 255)
                         local pcol = color(acc.r, acc.g, acc.b, pulse_a)
-                        local m_title = string.format("CAELESTIS\a%sADMIN", pcol:to_hex())
+                        local m_title = string.format("CAELESTIS\a%s" .. SCRIPT_CROSSHAIR_TAG, pcol:to_hex())
                         local tsz = render.measure_text(2, flg, m_title)
                         render.text(2, vector(cpos.x - tsz.x / 2, y_cur), color(255, 255, 255, alpha_byte), flg, m_title)
                         local sh_p = vector(cpos.x - tsz.x / 2, y_cur + 8 * sc)
@@ -18844,7 +19261,24 @@ v722:struct("antiaim_data")({
         local function update_shared_state()
             state.me = entity.get_local_player()
             state.is_alive = state.me and state.me:is_alive() or false
-            state.binds = ui.get_binds()
+            local raw_b = {}
+            local ok_b, b_list = pcall(ui.get_binds)
+            if ok_b and type(b_list) == "table" then
+                for _, b in ipairs(b_list) do
+                    local n = tostring(b.name or ""):lower()
+                    if not n:find("freestand") and not n:find("edge") then
+                        table.insert(raw_b, b)
+                    end
+                end
+            end
+            local fs_act, ey_act, fs_m, ey_m = get_lua_bind_states()
+            if fs_act then
+                table.insert(raw_b, { name = "Freestanding", active = true, mode = (fs_m == "toggle" and 2 or 1), value = (fs_m == "toggle" and "toggle" or "holding") })
+            end
+            if ey_act then
+                table.insert(raw_b, { name = "Edge Yaw", active = true, mode = (ey_m == "toggle" and 2 or 1), value = (ey_m == "toggle" and "toggle" or "holding") })
+            end
+            state.binds = raw_b
             state.ui_alpha = ui.get_alpha()
             state.is_scoped = state.me and state.me.m_bIsScoped or false
             state.anim_scoped = anim_scoped_tracker(state.is_scoped)
