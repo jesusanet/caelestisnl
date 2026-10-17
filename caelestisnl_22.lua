@@ -8,6 +8,14 @@ local l_base64_0 = require("neverlose/base64");
 local l_clipboard_0 = require("neverlose/clipboard");
 
 local v722 -- forward declaration
+
+-- ============================================================
+-- ВЕРСИЯ БИЛДА (ДЛЯ АВТО-ОБНОВЛЕНИЙ НА GITHUB):
+-- ВАЖНО: При каждом новом обновлении увеличьте это число (+1)
+-- перед тем как заливать файл на GitHub (например, 4, 5, 6...).
+-- Пользователи и друзья со старой версией увидят новый номер
+-- и Neverlose автоматически скачает им обновление с вашего GitHub!
+-- ============================================================
 local SCRIPT_BUILD = 3
 
 -- ============================================================
@@ -77,6 +85,132 @@ local function evaluate_admin_privileges()
 end
 
 pcall(evaluate_admin_privileges)
+
+-- ============================================================
+-- CAELESTIS AUTO-UPDATER (Cloud Sync via GitHub)
+-- ============================================================
+pcall(function()
+    if is_admin then
+        -- Защита разработчика: не перезаписывать рабочий файл админа
+        return
+    end
+
+    if not network or not network.get or not files then return end
+
+    local log = print_raw or print
+    local prefix = "\aA4FFCFFF   caelestis   \aAAAAAAFF› \aDEFAULT"
+
+    local cache_rnd = tostring(os and os.time and os.time() or math.random(10000, 99999))
+    local CLOUD_URLS = {
+        "https://raw.githubusercontent.com/jesusanet/caelestisnl/main/caelestisnl_22.lua?_t=" .. cache_rnd,
+        "https://ghproxy.net/https://raw.githubusercontent.com/jesusanet/caelestisnl/main/caelestisnl_22.lua?_t=" .. cache_rnd,
+        "https://gh-proxy.com/https://raw.githubusercontent.com/jesusanet/caelestisnl/main/caelestisnl_22.lua?_t=" .. cache_rnd,
+        "https://cdn.jsdelivr.net/gh/jesusanet/caelestisnl@main/caelestisnl_22.lua?_t=" .. cache_rnd
+    }
+
+    local cloud_data = nil
+    for _, url in ipairs(CLOUD_URLS) do
+        local ok, resp = pcall(network.get, url)
+        local body = resp
+        if type(resp) == "table" and type(resp.body) == "string" then
+            body = resp.body
+        end
+        if ok and type(body) == "string" and #body > 500000 and body:find("SCRIPT_BUILD") then
+            cloud_data = body
+            break
+        end
+    end
+
+    if not cloud_data then return end
+
+    local cloud_build = tonumber(cloud_data:match("local%s+SCRIPT_BUILD%s*=%s*(%d+)"))
+    if not cloud_build or cloud_build <= SCRIPT_BUILD then
+        return
+    end
+
+    if log then
+        log(prefix .. "\aA4FFCFFF[Авто-апдейтер]\aDEFAULT Найдено обновление \aA4FFCFFF#" .. tostring(cloud_build) .. "\aDEFAULT! Идёт установка...")
+    end
+
+    local candidate_paths = {}
+    local function add_candidate(raw)
+        if not raw or type(raw) ~= "string" or raw == "" then return end
+        local p = raw:gsub("\\", "/")
+        local variations = {
+            p,
+            p .. ".lua",
+            "nl/scripts/" .. p,
+            "nl/scripts/" .. p .. ".lua",
+            "scripts/" .. p,
+            "scripts/" .. p .. ".lua"
+        }
+        for _, v in ipairs(variations) do
+            local clean_v = v:gsub("%.lua%.lua$", ".lua")
+            local exists = false
+            for _, c in ipairs(candidate_paths) do
+                if c == clean_v then exists = true; break end
+            end
+            if not exists then table.insert(candidate_paths, clean_v) end
+        end
+    end
+
+    -- Добавляем путь из debug.getinfo
+    pcall(function()
+        local info = debug and debug.getinfo and debug.getinfo(1, "S")
+        if info and info.source and type(info.source) == "string" then
+            local s = info.source:gsub("^@", "")
+            add_candidate(s)
+        end
+    end)
+
+    -- Добавляем стандартные имена
+    add_candidate("caelestisnl_22")
+    add_candidate("caelestis_22")
+    add_candidate("caelestis")
+    add_candidate("old (2)")
+    add_candidate("old")
+
+    -- Добавляем активные скрипты из Neverlose
+    if common and common.get_active_scripts then
+        local ok_act, s_list = pcall(common.get_active_scripts)
+        if ok_act and type(s_list) == "table" then
+            for _, s in pairs(s_list) do
+                if type(s) == "string" then
+                    add_candidate(s)
+                end
+            end
+        end
+    end
+
+    local updated_files = {}
+    for _, path in ipairs(candidate_paths) do
+        local content = nil
+        pcall(function() content = files.read(path) end)
+        if content and #content > 50000 then
+            local is_caelestis = content:find("SCRIPT_BUILD") or content:find("caelestis") or content:find("Caelestis")
+            if is_caelestis then
+                local ok_w = pcall(files.write, path, cloud_data)
+                if ok_w then
+                    table.insert(updated_files, path)
+                end
+            end
+        end
+    end
+
+    if #updated_files > 0 then
+        for _, f in ipairs(updated_files) do
+            if log then
+                log(prefix .. "\aA4FFCFFF[Авто-апдейтер]\aDEFAULT Файл \aA4FFCFFF" .. f .. "\aDEFAULT успешно обновлён!")
+            end
+        end
+        if log then
+            log(prefix .. "Пожалуйста, нажмите кнопку \aA4FFCFFFReload (Перезагрузить)\aDEFAULT в меню Neverlose для применения обновления.")
+        end
+        if common and common.add_notify then
+            common.add_notify("Caelestis", "Обновление #" .. tostring(cloud_build) .. " установлено! Нажмите Reload.")
+        end
+    end
+end)
 
 -- ============================================================
 -- WINDOW FOCUS, PHYSICAL KEY CHECK & ALT-TAB STUCK PROTECTION
