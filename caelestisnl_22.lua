@@ -8,7 +8,7 @@ local l_base64_0 = require("neverlose/base64");
 local l_clipboard_0 = require("neverlose/clipboard");
 
 local v722 -- forward declaration
-local SCRIPT_BUILD = 2
+local SCRIPT_BUILD = 3
 
 -- ============================================================
 -- USER PRIVILEGE CHECK: ADMIN vs NIGHTLY (Steam ID & Username)
@@ -340,96 +340,6 @@ pcall(function()
         render.rect(box_pos + vector(2, box_h - 2), box_pos + vector(2 + line_w, box_h - 1), color(menu_col.r, menu_col.g, menu_col.b, math.floor(200 * alpha)), 1)
     end)
 end)
-
--- ============================================================
--- CAELESTIS AUTO-UPDATER (Cloud Sync via GitHub)
--- ============================================================
-pcall(function()
-    if not network or not network.get or not files then return end
-    
-    -- Разработчик (JESUSANET): защищаем локальные файлы от затирания с GitHub
-    if is_admin then return end
-    
-    local log = print_raw or print
-    local prefix = "\aA4FFCFFF   caelestis   \aAAAAAAFF› \aDEFAULT"
-    local cache_buster = tostring(os and os.time and os.time() or (globals and globals.realtime and math.floor(globals.realtime * 1000)) or math.random(1000, 999999))
-    local CLOUD_URL = "https://raw.githubusercontent.com/jesusanet/caelestisnl/main/caelestisnl_22.lua?_t=" .. cache_buster
-    
-    local ok, cloud_data = pcall(network.get, CLOUD_URL)
-    if type(cloud_data) == "table" and type(cloud_data.body) == "string" then
-        cloud_data = cloud_data.body
-    end
-    
-    -- Fallback to jsDelivr if GitHub Raw is unreachable
-    if not ok or type(cloud_data) ~= "string" or #cloud_data < 500000 then
-        local fallback_url = "https://cdn.jsdelivr.net/gh/jesusanet/caelestisnl@main/caelestisnl_22.lua?_t=" .. cache_buster
-        local fb_ok, fb_data = pcall(network.get, fallback_url)
-        if type(fb_data) == "table" and type(fb_data.body) == "string" then
-            fb_data = fb_data.body
-        end
-        if fb_ok and type(fb_data) == "string" and #fb_data >= 500000 then
-            cloud_data = fb_data
-            ok = true
-        end
-    end
-    
-    if not ok or type(cloud_data) ~= "string" or #cloud_data < 500000 then
-        return
-    end
-    
-    local cloud_build = tonumber(cloud_data:match("local%s+SCRIPT_BUILD%s*=%s*(%d+)"))
-    if not cloud_build or cloud_build <= SCRIPT_BUILD then
-        return
-    end
-    
-    local active_names = {}
-    if common and common.get_active_scripts then
-        local s_list = common.get_active_scripts()
-        if type(s_list) == "table" then
-            for _, s in pairs(s_list) do
-                if type(s) == "string" and (s:lower():find("caelestis") or s:lower():find("script")) then
-                    table.insert(active_names, s)
-                end
-            end
-        end
-    end
-    table.insert(active_names, "caelestisnl_22")
-    table.insert(active_names, "caelestis")
-    
-    local candidate_paths = {}
-    for _, name in ipairs(active_names) do
-        table.insert(candidate_paths, "nl/scripts/" .. name .. ".lua")
-        table.insert(candidate_paths, "scripts/" .. name .. ".lua")
-        table.insert(candidate_paths, name .. ".lua")
-    end
-    
-    local updated_any = false
-    local handled = {}
-    for _, file_path in ipairs(candidate_paths) do
-        if not handled[file_path] then
-            handled[file_path] = true
-            local local_data = nil
-            pcall(function() local_data = files.read(file_path) end)
-            if local_data and #local_data > 100000 then
-                local write_ok = pcall(files.write, file_path, cloud_data)
-                if write_ok then
-                    updated_any = true
-                end
-            end
-        end
-    end
-    
-    if updated_any then
-        if log then
-            log(prefix .. "\aA4FFCFFF[ОБНОВЛЕНИЕ]\aDEFAULT Доступна новая версия #" .. tostring(cloud_build) .. " с GitHub! Файл успешно обновлён на диске.")
-            log(prefix .. "Пожалуйста, нажмите кнопку \aA4FFCFFFReload (Перезагрузить)\aDEFAULT в Neverlose для применения изменений.")
-        end
-        if common and common.add_notify then
-            common.add_notify("Caelestis", "Обновление #" .. tostring(cloud_build) .. " скачано! Нажмите Reload.")
-        end
-    end
-end)
-
 
 if type(render) == "table" and render.rect and not render.rect_filled then
     render.rect_filled = render.rect
