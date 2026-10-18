@@ -16,7 +16,7 @@ local v722 -- forward declaration
 -- Пользователи и друзья со старой версией увидят новый номер
 -- и Neverlose автоматически скачает им обновление с вашего GitHub!
 -- ============================================================
-local SCRIPT_BUILD = 4
+local SCRIPT_BUILD = 6
 
 -- ============================================================
 -- USER PRIVILEGE CHECK: ADMIN vs NIGHTLY (Steam ID & Username)
@@ -1312,6 +1312,7 @@ delete_preset_from_disk = function(self, name)
                 end;
             end;
         end;
+
         return loaded;
     end,
 
@@ -1362,6 +1363,992 @@ delete_preset_from_disk = function(self, name)
         cvar.playvol:call("ui\\beepclear", 1);
     end,
 
+    PIZDA_DIRS = { "nl/scripts/pizda", "scripts/pizda", "pizda", "nl/scripts", "scripts", "" },
+
+    get_nl_cfg_tabs = function(self)
+        return {
+            ["Ragebot"]   = ui.find("Aimbot", "Ragebot"),
+            ["Anti Aim"]  = ui.find("Aimbot", "Anti Aim") or ui.find("Anti Aim"),
+            ["Legitbot"]  = ui.find("Aimbot", "Legitbot"),
+            ["Players"]   = ui.find("Visuals", "Players"),
+            ["World"]     = ui.find("Visuals", "World"),
+            ["Inventory"] = ui.find("Visuals", "Inventory"),
+            ["Main"]      = ui.find("Miscellaneous", "Main")
+        };
+    end,
+
+    read_pizda_file = function(self, filename)
+        for _, dir in ipairs(self.PIZDA_DIRS) do
+            local path = dir .. "/" .. filename;
+            local ok, content = pcall(files.read, path);
+            if ok and content and #content > 0 then
+                return content, path;
+            end;
+        end;
+        return nil;
+    end,
+
+    get_pizda_catalog = function(self)
+        if self._cached_pizda_catalog and #self._cached_pizda_catalog > 0 then
+            return self._cached_pizda_catalog;
+        end;
+
+        local catalog = {};
+        local seen = {};
+
+        local function add_entry(src, name, fmt, raw)
+            if not raw or #raw < 5 then return end;
+            local id = string.format("[%s] %s", tostring(src), tostring(name));
+            if seen[id] then return end;
+            seen[id] = true;
+            table.insert(catalog, {
+                id = id,
+                source = tostring(src),
+                name = tostring(name),
+                display = id,
+                format = fmt,
+                raw = raw
+            });
+        end;
+
+        -- 1. Gingersense
+        local gs_content = self:read_pizda_file("Gingersense_48.lua");
+        if gs_content then
+            local def_block = gs_content:match("default_configs%s*=%s*{(.-)\n%s*}");
+            if def_block then
+                for k, v in def_block:gmatch('([%w_%-]+)%s*=%s*"([^"]+)"') do
+                    if v:find("gingersense:config") or #v > 50 then
+                        add_entry("Gingersense", k, "gingersense", v);
+                    end;
+                end;
+            end;
+        end;
+
+        -- 2. Frost (v1263("density", ...))
+        local frost_content = self:read_pizda_file("frost_7_10.lua");
+        if frost_content then
+            for name, raw in frost_content:gmatch('v1263%(%s*"density"%s*,%s*"([^"]+)"%s*,%s*%-?%d+%s*,%s*"([^"]+)"') do
+                add_entry("Frost", name, "frost", raw);
+            end;
+        end;
+
+        -- 3. Godmodki
+        local god_content = self:read_pizda_file("godmodki_6.lua");
+        if god_content then
+            for name, raw in god_content:gmatch('v96%(%s*"(GODMODKI[^"]+)"%s*,%s*"([^"]+)"') do
+                add_entry("Godmodki", name, "godmodki", raw);
+            end;
+        end;
+
+        -- 4. Gasolina
+        local gas_content = self:read_pizda_file("gasolina_27_11.lua") or self:read_pizda_file("gasolina_27.lua");
+        if gas_content then
+            for raw, name in gas_content:gmatch('data%s*=%s*"([^"]+)"%s*,%s*name%s*=%s*"([^"]+)"') do
+                local clean_name = name:gsub("\\%d+", ""):gsub("[%z\001-\031]", ""):match("^%s*(.-)%s*$");
+                if clean_name and #clean_name > 0 then
+                    add_entry("Gasolina", clean_name, "gasolina", raw);
+                end;
+            end;
+        end;
+
+        -- 5. LCsense
+        local lc_content = self:read_pizda_file("lcsense_11.lua");
+        if lc_content then
+            local p1 = lc_content:match('database%[pinned%[1%]%]%s*=%s*"([^"]+)"');
+            if p1 then add_entry("LCsense", "Delay", "lcsense", p1) end;
+            local p2 = lc_content:match('database%[pinned%[2%]%]%s*=%s*"([^"]+)"');
+            if p2 then add_entry("LCsense", "Meta", "lcsense", p2) end;
+            local p3 = lc_content:match('database%[pinned%[3%]%]%s*=%s*"([^"]+)"');
+            if p3 then add_entry("LCsense", "MetaLc", "lcsense", p3) end;
+        end;
+
+        -- 6. Aesthetic
+        local aes_content = self:read_pizda_file("aesthetic_19.lua");
+        if aes_content then
+            local b64 = aes_content:match('create_preset%(%s*"HexColor"%s*,%s*"Default"%s*,%s*%d+%s*,%s*"([^"]+)"');
+            if b64 then add_entry("Aesthetic", "Default", "aesthetic", b64) end;
+        end;
+
+        -- 7. Extension
+        local ext_content = self:read_pizda_file("extenshion_4.lua");
+        if ext_content then
+            for p_name, raw_json in ext_content:gmatch('slot_0_46_0%.presets%.([%w_]+)%s*=%s*slot_0_46_0%.parse_preset%(%"(.-)%"%)') do
+                add_entry("Extension", p_name, "extension", raw_json:gsub('\\"', '"'));
+            end;
+        end;
+
+        -- 8. Elysian (85_elysian.lua)
+        local ely_content = self:read_pizda_file("85_elysian.lua");
+        if ely_content then
+            local ely_raw = ely_content:match('slot_0_72_2%s*=%s*"([^"]+)"');
+            if ely_raw then
+                add_entry("Elysian", "Default", "elysian", ely_raw);
+            end;
+        end;
+        if db and db["elysian_db"] and type(db["elysian_db"]) == "table" then
+            for p_name, p_raw in pairs(db["elysian_db"]) do
+                if type(p_raw) == "string" and #p_raw > 20 then
+                    add_entry("Elysian", p_name, "elysian", p_raw);
+                end;
+            end;
+        end;
+
+        -- 9. LuaSense (21_Luasense beta#6.lua & presets1ngles.txt)
+        local ls_content = self:read_pizda_file("21_Luasense beta#6.lua");
+        if ls_content then
+            local preset_names = { "Meta", "Aggressive", "Snap [test]", "Custom Jitter", "Dynamic" };
+            local p_idx = 0;
+            for raw_json in ls_content:gmatch('json%.parse%("(%{%\\"defensive\\".-)"%)') do
+                p_idx = p_idx + 1;
+                local p_name = preset_names[p_idx] or ("Preset " .. p_idx);
+                local clean_json = raw_json:gsub('\\"', '"'):gsub('\\\\', '\\');
+                add_entry("LuaSense", p_name, "luasense", clean_json);
+            end;
+        end;
+
+
+        if db and db["configurations4"] and type(db["configurations4"]) == "table" then
+            for p_name, p_val in pairs(db["configurations4"]) do
+                local raw_s = type(p_val) == "string" and p_val or (type(p_val) == "table" and json.stringify(p_val));
+                if raw_s and #raw_s > 10 then
+                    add_entry("LuaSense", p_name, "luasense", raw_s);
+                end;
+            end;
+        end;
+
+        if #catalog == 0 then
+            add_entry("Gingersense", "DEFAULT_pirex", "placeholder", "");
+            add_entry("Frost", "Defensive", "placeholder", "");
+            add_entry("Gasolina", "Old Bobro", "placeholder", "");
+            add_entry("Godmodki", "GODMODKI 666", "placeholder", "");
+            add_entry("LCsense", "Delay", "placeholder", "");
+            add_entry("Extension", "Mixed", "placeholder", "");
+            add_entry("Aesthetic", "Default", "placeholder", "");
+        end;
+
+        self._cached_pizda_catalog = catalog;
+        return catalog;
+    end,
+
+    decode_any_preset = function(self, raw_str)
+        if not raw_str or raw_str == "" then return nil, "empty" end;
+        local s = tostring(raw_str):gsub("#[^\r\n]*", ""):gsub("[\r\n\t ]+", ""):gsub('^["\']+', ''):gsub('["\']+$', '');
+        if #s == 0 then return nil, "empty" end;
+
+        -- Elysian custom cipher decode helper
+        local elysian_alpha = "l29W5AU6JX1CEVIjmNFZM4xv+twdQsHLBrYG3S7h/zkPpbyoaneKqcDR)Tigf0u8";
+        local function decode_elysian_str(str_in)
+            if not str_in or type(str_in) ~= "string" or #str_in < 10 then return nil end;
+            local ok_el, res_el = pcall(function()
+                local bin_str = string.gsub(str_in, "[^" .. elysian_alpha .. "=]", ""):gsub(".", function(arg_ch)
+                    if arg_ch == "=" then return "" end;
+                    local pos = elysian_alpha:find(arg_ch, 1, true);
+                    if not pos then return "" end;
+                    local val = pos - 1;
+                    local b = "";
+                    for iter = 6, 1, -1 do
+                        b = b .. (val % 2^iter - val % 2^(iter - 1) > 0 and "1" or "0");
+                    end;
+                    return b;
+                end):gsub("%d%d%d?%d?%d?%d?%d?%d?", function(arg_byte)
+                    if #arg_byte ~= 8 then return "" end;
+                    local v = 0;
+                    for iter = 1, 8 do
+                        v = v + (arg_byte:sub(iter, iter) == "1" and 2^(8 - iter) or 0);
+                    end;
+                    return string.char(v);
+                end);
+                return json.parse(bin_str);
+            end);
+            if ok_el and type(res_el) == "table" then
+                return res_el;
+            end;
+            return nil;
+        end;
+
+        -- 0. Check Elysian format directly
+        local ely_parsed = decode_elysian_str(raw_str) or decode_elysian_str(s);
+        if ely_parsed and type(ely_parsed) == "table" and (ely_parsed.config or ely_parsed.builder or ely_parsed.defensive) then
+            if type(ely_parsed.builder) == "string" then
+                ely_parsed.builder = decode_elysian_str(ely_parsed.builder) or ely_parsed.builder;
+            end;
+            if type(ely_parsed.defensive) == "string" then
+                ely_parsed.defensive = decode_elysian_str(ely_parsed.defensive) or ely_parsed.defensive;
+            end;
+            return ely_parsed, "elysian";
+        end;
+
+        -- 1. Gingersense wrapper: {gingersense:config}:<base64>
+        local gs_b64 = s:match("^{gingersense:config}:([%w+/=]+)") or s:match("{gingersense:config}:([%w+/=]+)");
+        if gs_b64 then
+            local dec = l_base64_0.decode(gs_b64);
+            if dec then
+                local ok, parsed = pcall(json.parse, dec);
+                if ok and type(parsed) == "table" then return parsed, "gingersense" end;
+            end;
+        end;
+
+        -- 2. Evalate wrapper: evalate>(.-)< or evalate[...]>...<
+        local ev_b64 = s:match("evalate>([%w+/=]+)<") or s:match("evalate%[.-%]>([%w+/=]+)<");
+        if ev_b64 then
+            local dec = l_base64_0.decode(ev_b64);
+            if dec then
+                local ok, parsed = pcall(json.parse, dec);
+                if ok and type(parsed) == "table" then return parsed, "evalate" end;
+            end;
+        end;
+
+        -- 3. Frost custom base64 alphabet: "MNVaEeiPfvJ4BgzWUmtsRZFS8OXc9kqhy3dobp5IDwuTAG6Kl2Cr7HnY10jxLQ+/="
+        local frost_alpha = "MNVaEeiPfvJ4BgzWUmtsRZFS8OXc9kqhy3dobp5IDwuTAG6Kl2Cr7HnY10jxLQ+/=";
+        local frost_std   = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+        local frost_raw   = s:match("^([%w+/=]+)_$") or s;
+        if #frost_raw > 40 then
+            local f_ok, f_res = pcall(function()
+                local remapped = {};
+                for i = 1, #frost_raw do
+                    local ch = frost_raw:sub(i, i);
+                    local pos = frost_alpha:find(ch, 1, true);
+                    remapped[#remapped + 1] = pos and frost_std:sub(pos, pos) or ch;
+                end;
+                local dec = l_base64_0.decode(table.concat(remapped));
+                if dec then return json.parse(dec) end;
+            end);
+            if f_ok and type(f_res) == "table" then
+                return f_res, "frost";
+            end;
+        end;
+
+        -- 4. Standard Base64 decode
+        local dec_ok, dec_bin = pcall(l_base64_0.decode, s);
+        if dec_ok and dec_bin and #dec_bin > 0 then
+            -- Native Caelestis msgpack
+            local unpack_ok, unpacked = pcall(msgpack.unpack, dec_bin);
+            if unpack_ok and type(unpacked) == "table" then
+                return unpacked, "caelestis";
+            end;
+
+            -- Base64 JSON (Godmodki, Gasolina, Aesthetic, 7-tabs)
+            local j_ok, j_parsed = pcall(json.parse, dec_bin);
+            if j_ok and type(j_parsed) == "table" then
+                -- Gasolina: { author = "...", config = "<base64>" }
+                if j_parsed.config and type(j_parsed.config) == "string" then
+                    local inner_dec = l_base64_0.decode(j_parsed.config);
+                    if inner_dec then
+                        local inner_ok, inner_p = pcall(json.parse, inner_dec);
+                        if inner_ok and type(inner_p) == "table" then
+                            return inner_p, "gasolina";
+                        end;
+                    end;
+                end;
+                if j_parsed["Anti Aim"] or j_parsed["Ragebot"] or j_parsed["Visuals"] or j_parsed["Miscellaneous"] then
+                    return j_parsed, "nl_tabs";
+                end;
+                if j_parsed["Anti-Aim"] then
+                    return j_parsed, "godmodki";
+                end;
+                return j_parsed, "b64_json";
+            end;
+
+            -- LCsense XOR encrypted Base64
+            local xor_key = "3e b1 59 f2 8d 04 c7 aa 6f d0 23 9c 45 e8";
+            local xor_ok, xor_res = pcall(function()
+                local slen, klen = #dec_bin, #xor_key;
+                local sbuf = ffi.new('char[?]', slen + 1);
+                local kbuf = ffi.new('char[?]', klen + 1);
+                ffi.copy(sbuf, dec_bin);
+                ffi.copy(kbuf, xor_key);
+                for i = 0, slen - 1 do
+                    sbuf[i] = bit.bxor(sbuf[i], kbuf[i % klen]);
+                end;
+                return ffi.string(sbuf, slen);
+            end);
+            if xor_ok and xor_res then
+                local lc_ok, lc_p = pcall(json.parse, xor_res);
+                if lc_ok and type(lc_p) == "table" then
+                    if lc_p.config and type(lc_p.config) == "string" then
+                        local in_bin = l_base64_0.decode(lc_p.config);
+                        if in_bin then
+                            local slen2, klen2 = #in_bin, #xor_key;
+                            local sbuf2 = ffi.new('char[?]', slen2 + 1);
+                            local kbuf2 = ffi.new('char[?]', klen2 + 1);
+                            ffi.copy(sbuf2, in_bin);
+                            ffi.copy(kbuf2, xor_key);
+                            for i = 0, slen2 - 1 do
+                                sbuf2[i] = bit.bxor(sbuf2[i], kbuf2[i % klen2]);
+                            end;
+                            local in_json = ffi.string(sbuf2, slen2);
+                            local ok_in, p_in = pcall(json.parse, in_json);
+                            if ok_in and type(p_in) == "table" then
+                                return p_in, "lcsense";
+                            end;
+                        end;
+                    end;
+                    return lc_p, "lcsense";
+                end;
+            end;
+        end;
+
+        -- 5. Raw JSON (LuaSense, Extension, raw exports)
+        local r_ok, r_parsed = pcall(json.parse, raw_str);
+        if r_ok and type(r_parsed) == "table" then
+            return r_parsed, "raw_json";
+        end;
+        local json_sub = raw_str:match("({%s*\".*})");
+        if json_sub then
+            local j_ok2, j_p2 = pcall(json.parse, json_sub);
+            if j_ok2 and type(j_p2) == "table" then
+                return j_p2, "raw_json";
+            end;
+        end;
+
+        return nil, "unknown_format";
+    end,
+
+    extract_aa_settings = function(self, data)
+        local states = {};
+        for i = 1, 9 do
+            states[i] = {
+                yaw_mode = "Left / Right",
+                yaw_left = 0,
+                yaw_right = 0,
+                yaw_offset = 0,
+                left_limit = 58,
+                right_limit = 58,
+                modifier = "Disabled",
+                modifier_offset = 0,
+                body = true,
+                -- Defensive AA settings
+                has_defensive = false,
+                defensive_aa = false,
+                defensive_pitch = "Disabled",
+                defensive_pitch_angle = -89,
+                defensive_yaw = "Disabled",
+                defensive_yaw_angle = 180,
+                defensive_yaw_spin_speed = 36,
+                defensive_activation_mode = "Always",
+                defensive_flick = false,
+                flick_mode = "Constant Invert",
+                flick_pitch = -89,
+                flick_yaw = 90,
+                flick_speed = 12
+            };
+        end;
+
+        local name_map = {
+            ["standing"] = 1, ["stand"] = 1,
+            ["running"] = 2, ["run"] = 2, ["moving"] = 2,
+            ["slowmotion"] = 3, ["slowing"] = 3, ["slow"] = 3, ["slow walk"] = 3,
+            ["crouch"] = 4, ["crouching"] = 4, ["duck"] = 4,
+            ["crouch moving"] = 5, ["crouch move"] = 5, ["duck move"] = 5, ["duck moving"] = 5, ["sneaking"] = 5, ["sneak"] = 5,
+            ["air"] = 6, ["jump"] = 6, ["in air"] = 6,
+            ["air crouch"] = 7, ["air crouching"] = 7, ["duck jump"] = 7, ["in air duck"] = 7,
+            ["freestanding"] = 8,
+            ["manual"] = 9, ["manuals"] = 9, ["manual aa"] = 9
+        };
+
+        local function norm_mod(j)
+            if not j then return "Disabled" end;
+            local jl = tostring(j):lower();
+            if jl:find("center") or jl:find("gingerbomber") then return "Center"
+            elseif jl:find("offset") then return "Offset"
+            elseif jl:find("random") then return "Random"
+            elseif jl:find("spin") then return "Spin"
+            elseif jl:find("3-way") or jl:find("3way") or jl:find("way") then return "3-Way"
+            elseif jl:find("skitter") then return "Skitter"
+            elseif jl:find("sway") then return "Sway"
+            else return "Disabled" end;
+        end;
+
+        local function norm_def_pitch(p)
+            if not p then return "Disabled" end;
+            local pl = tostring(p):lower();
+            if pl == "disabled" or pl == "off" or pl == "false" then return "Disabled"
+            elseif pl:find("auto") then return "Auto"
+            elseif pl:find("elysian") then return "Elysian"
+            elseif pl:find("semi-up") or pl:find("semi_up") then return "Semi-Up"
+            elseif pl:find("semi-down") or pl:find("semi_down") then return "Semi-Down"
+            elseif pl:find("dynamic") then return "Dynamic"
+            elseif pl:find("oscillate") then return "Oscillate"
+            elseif pl:find("custom") then return "Custom"
+            elseif pl:find("fake up") or pl:find("fakeup") then return "Fake Up"
+            elseif pl:find("up") then return "Up"
+            elseif pl:find("down") then return "Down"
+            elseif pl:find("zero") then return "Zero"
+            elseif pl:find("left") or pl:find("l - r") or pl:find("l/r") then return "Left / Right"
+            elseif pl:find("random") then return "Random"
+            elseif pl:find("jitter") then return "Jitter"
+            elseif pl:find("spin") then return "Spin"
+            else return "Down" end;
+        end;
+
+        local function norm_def_yaw(y)
+            if not y then return "Disabled" end;
+            local yl = tostring(y):lower();
+            if yl == "disabled" or yl == "off" or yl == "false" then return "Disabled"
+            elseif yl:find("sinusoidal") or yl:find("sin") then return "Dynamic"
+            elseif yl:find("chaotic") then return "Random"
+            elseif yl:find("dynamic") then return "Dynamic"
+            elseif yl:find("sweep") then return "Sweep"
+            elseif yl:find("sideways") then return "Sideways"
+            elseif yl:find("spin jitter") then return "Spin Jitter"
+            elseif yl:find("spin") then return "Spin"
+            elseif yl:find("static") then return "Static"
+            elseif yl:find("left") or yl:find("l - r") or yl:find("l/r") then return "Left / Right"
+            elseif yl:find("jitter") then return "Jitter"
+            elseif yl:find("switch") or yl:find("flip") then return "Switch"
+            elseif yl:find("random") then return "Random"
+            elseif yl:find("180") then return "180v"
+            elseif yl:find("opposite") then return "Opposite"
+            elseif yl:find("ways") or yl:find("way") then return "Ways"
+            else return "Static" end;
+        end;
+
+        -- 0. Check Elysian format (data.builder and/or data.defensive)
+        if type(data) == "table" and (data.builder or data.defensive) then
+            local bld = data.builder;
+            if type(bld) == "table" then
+                for k, el in pairs(bld) do
+                    if type(el) == "table" then
+                        local idx = name_map[tostring(k):lower()];
+                        if idx then
+                            local s = states[idx];
+                            if el.yaw_left then s.yaw_left = math.floor(tonumber(el.yaw_left) or 0); end;
+                            if el.yaw_right then s.yaw_right = math.floor(tonumber(el.yaw_right) or 0); end;
+                            if el.yaw_base then s.yaw_offset = 0; end;
+                            if el.left_limit then s.left_limit = math.min(60, math.max(0, math.floor(tonumber(el.left_limit) or 58))); end;
+                            if el.right_limit then s.right_limit = math.min(60, math.max(0, math.floor(tonumber(el.right_limit) or 58))); end;
+                            if el.modifier then s.modifier = norm_mod(el.modifier); end;
+                            if el.modifier_offset then s.modifier_offset = math.floor(tonumber(el.modifier_offset) or 0); end;
+                            s.body = true;
+                        end;
+                    end;
+                end;
+            end;
+
+            local def = data.defensive;
+            if type(def) == "table" then
+                for k, el in pairs(def) do
+                    if type(el) == "table" then
+                        local idx = name_map[tostring(k):lower()];
+                        if idx then
+                            local s = states[idx];
+                            if el.enable == true then
+                                s.has_defensive = true;
+                                s.defensive_aa = true;
+                                s.defensive_pitch = norm_def_pitch(el.pitch_mode);
+                                if el.pitch then s.defensive_pitch_angle = math.floor(tonumber(el.pitch) or -89); end;
+                                s.defensive_yaw = norm_def_yaw(el.yaw_mode);
+                                if el.yaw then s.defensive_yaw_angle = math.floor(tonumber(el.yaw) or 180); end;
+                                if el.yaw_spin_spd then s.defensive_yaw_spin_speed = math.min(100, math.max(1, math.floor(tonumber(el.yaw_spin_spd) * 3))); end;
+                                if el.activation_mode then s.defensive_activation_mode = (tostring(el.activation_mode):lower():find("hittable")) and "Hittable Only" or "Always"; end;
+                                if el.fe == true then s.defensive_flick = true; end;
+                            else
+                                s.has_defensive = false;
+                                s.defensive_aa = false;
+                                s.defensive_pitch = "Disabled";
+                                s.defensive_yaw = "Disabled";
+                                s.defensive_flick = false;
+                            end;
+                        end;
+                    end;
+                end;
+            end;
+
+            return states;
+        end;
+
+        -- 1. Check builder_elements (LuaSense, Evalate, Godmodki)
+        local builder = (type(data) == "table") and (data.rage and data.rage.builder_elements or data.builder_elements or data["Anti-Aim"] or data.builder);
+        if builder and type(builder) == "table" then
+            for k, el in pairs(builder) do
+                if type(el) == "table" then
+                    local idx = name_map[tostring(k):lower()];
+                    if idx then
+                        local s = states[idx];
+                        if el.yaw_left then s.yaw_left = math.floor(tonumber(el.yaw_left) or 0) end;
+                        if el.yaw_right then s.yaw_right = math.floor(tonumber(el.yaw_right) or 0) end;
+                        if el.yaw_center then s.yaw_offset = math.floor(tonumber(el.yaw_center) or 0) end;
+                        if el.fake_left then s.left_limit = math.min(60, math.max(0, math.floor(tonumber(el.fake_left) or 58))) end;
+                        if el.fake_right then s.right_limit = math.min(60, math.max(0, math.floor(tonumber(el.fake_right) or 58))) end;
+                        if el.yaw_mode then
+                            local ym = tostring(el.yaw_mode):lower();
+                            if ym == "static" then s.yaw_mode = "Static"; else s.yaw_mode = "Left / Right"; end;
+                        end;
+                        if el.Jitter or el.jitter then s.modifier = norm_mod(el.Jitter or el.jitter) end;
+                        if el.yaw_jitter_ovr and tonumber(el.yaw_jitter_ovr) and tonumber(el.yaw_jitter_ovr) ~= 0 then
+                            s.modifier_offset = math.floor(tonumber(el.yaw_jitter_ovr));
+                            if s.modifier == "Disabled" then s.modifier = "Center"; end;
+                        end;
+                        s.body = true;
+                    end;
+                end;
+            end;
+
+            -- Check LuaSense / Evalate defensive conditions lookup
+            local def_cond_map = {};
+            local has_def_cond_specified = false;
+            if type(data) == "table" and data.defensive and type(data.defensive.defensive_conditions) == "table" then
+                has_def_cond_specified = true;
+                for _, c in pairs(data.defensive.defensive_conditions) do
+                    local cl = tostring(c):lower();
+                    if cl ~= "~" and #cl > 0 then
+                        def_cond_map[cl] = true;
+                    end;
+                end;
+            end;
+
+            -- Check defensive elements in rage / root
+            local def_els = data.rage and data.rage.defensive_elements or data.defensive_elements;
+            for k, b_el in pairs(builder) do
+                if type(b_el) == "table" then
+                    local idx = name_map[tostring(k):lower()];
+                    if idx then
+                        local s = states[idx];
+                        local d_el = (def_els and type(def_els) == "table") and (def_els[k] or def_els[tostring(k):lower()]);
+                        local st_lower = tostring(k):lower();
+
+                        local in_cond = def_cond_map[st_lower] == true;
+                        local toggle = d_el and (d_el.def_toggle == true or d_el.enabled == true or d_el.defensive == true);
+                        local b_def = (b_el.def_toggle == true) or (b_el.defensive_pitch and b_el.defensive_pitch ~= "Disabled");
+
+                        local is_def = false;
+                        if has_def_cond_specified then
+                            is_def = in_cond or (toggle == true);
+                        else
+                            is_def = (toggle == true) or (d_el ~= nil and toggle ~= false) or b_def;
+                        end;
+
+                        if is_def then
+                            s.has_defensive = true;
+                            s.defensive_aa = true;
+                            local p = (d_el and (d_el.def_pitch or d_el.pitch)) or b_el.defensive_pitch or b_el.def_pitch;
+                            s.defensive_pitch = norm_def_pitch(p or "Down");
+                            local p_off = (d_el and d_el.pitch_offset) or b_el.pitch_offset;
+                            if p_off then s.defensive_pitch_angle = math.floor(tonumber(p_off) or -89); end;
+
+                            local y = (d_el and (d_el.yaw_mode or d_el.def_yaw)) or b_el.defensive_yaw or b_el.yaw_mode;
+                            s.defensive_yaw = norm_def_yaw(y or "Static");
+                            local spd = (d_el and d_el.spin_speed) or b_el.spin_speed;
+                            if spd then s.defensive_yaw_spin_speed = math.min(100, math.max(1, math.floor(tonumber(spd) * 5))); end;
+
+                            local y_cnt = (d_el and d_el.yaw_center) or b_el.yaw_center;
+                            if y_cnt and tonumber(y_cnt) ~= 0 then s.defensive_yaw_angle = math.floor(tonumber(y_cnt)); end;
+
+                            local act = (d_el and (d_el.def_activation or d_el.def_activation_ct)) or b_el.def_activation;
+                            if act then
+                                s.defensive_activation_mode = (tostring(act):lower():find("hittable")) and "Hittable Only" or "Always";
+                            end;
+
+                            local flk_spd = (d_el and d_el.flick_speed) or b_el.flick_speed;
+                            local flk_l = (d_el and d_el.flick_left) or b_el.flick_left or 0;
+                            local flk_r = (d_el and d_el.flick_right) or b_el.flick_right or 0;
+                            if flk_spd and tonumber(flk_spd) and tonumber(flk_spd) > 1 and (tonumber(flk_l) ~= 0 or tonumber(flk_r) ~= 0) then
+                                s.defensive_flick = true;
+                                s.flick_speed = math.floor(tonumber(flk_spd));
+                                s.flick_yaw = math.abs(math.floor(tonumber(flk_r) ~= 0 and tonumber(flk_r) or tonumber(flk_l)));
+                            end;
+                        else
+                            s.has_defensive = false;
+                            s.defensive_aa = false;
+                            s.defensive_pitch = "Disabled";
+                            s.defensive_yaw = "Disabled";
+                            s.defensive_flick = false;
+                        end;
+                    end;
+                end;
+            end;
+
+            return states;
+        end;
+
+        -- 2. Check Gingersense format (array of tables, one with .states)
+        local gs_states = nil;
+        if type(data) == "table" then
+            if data.states and type(data.states) == "table" then
+                gs_states = data.states;
+            else
+                for _, it in pairs(data) do
+                    if type(it) == "table" and it.states and type(it.states) == "table" then
+                        gs_states = it.states;
+                        break;
+                    end;
+                end;
+            end;
+        end;
+
+        if gs_states and type(gs_states) == "table" then
+            for k, el in pairs(gs_states) do
+                if type(el) == "table" then
+                    local idx = name_map[tostring(k):lower()];
+                    if idx then
+                        local s = states[idx];
+                        if el.yaw_add then s.yaw_left = math.floor(tonumber(el.yaw_add) or 0) end;
+                        if el.yaw_add_r then s.yaw_right = math.floor(tonumber(el.yaw_add_r) or 0) end;
+                        if s.yaw_left == 0 and s.yaw_right == 0 and el.yaw_add then
+                            s.yaw_offset = math.floor(tonumber(el.yaw_add) or 0);
+                        end;
+                        if el.fakelimit_l then
+                            s.left_limit = math.min(60, math.max(0, math.floor(tonumber(el.fakelimit_l) or 58)));
+                        end;
+                        if el.fakelimit_r2 then
+                            s.right_limit = math.min(60, math.max(0, math.floor(tonumber(el.fakelimit_r2) or 58)));
+                        elseif el.fakelimit_r then
+                            s.right_limit = math.min(60, math.max(0, math.floor(tonumber(el.fakelimit_r) or 58)));
+                        end;
+                        if el.yaw_jitter then s.modifier = norm_mod(el.yaw_jitter) end;
+                        if el.yaw_jitter_add and tonumber(el.yaw_jitter_add) then
+                            s.modifier_offset = math.floor(tonumber(el.yaw_jitter_add));
+                        elseif el.yaw_jitter_own1 and tonumber(el.yaw_jitter_own1) then
+                            s.modifier_offset = math.floor(tonumber(el.yaw_jitter_own1));
+                        end;
+                        s.body = true;
+
+                        -- Defensive in Gingersense
+                        local has_flick = (el.cleanrecords_random_flick == true);
+                        local has_act = false;
+                        if el.defensive_activation_options and type(el.defensive_activation_options) == "table" then
+                            for _, opt in pairs(el.defensive_activation_options) do
+                                if opt ~= "~" and opt ~= "" then has_act = true; break; end;
+                            end;
+                        end;
+                        local is_disabled = (el.defensive_disable_option == true);
+                        if has_flick or (has_act and not is_disabled) then
+                            s.has_defensive = true;
+                            s.defensive_aa = true;
+                            s.defensive_pitch = "Down";
+                            s.defensive_pitch_angle = -89;
+                            s.defensive_yaw = (el.yaw_jitter and el.yaw_jitter:lower():find("spin")) and "Spin" or "Static";
+                            s.defensive_yaw_angle = 180;
+                            if has_flick then
+                                s.defensive_flick = true;
+                                s.flick_mode = "Constant Invert";
+                                s.flick_pitch = -89;
+                                s.flick_yaw = 90;
+                                s.flick_speed = 12;
+                            end;
+                        else
+                            s.has_defensive = false;
+                            s.defensive_aa = false;
+                            s.defensive_pitch = "Disabled";
+                            s.defensive_yaw = "Disabled";
+                            s.defensive_flick = false;
+                        end;
+                    end;
+                end;
+            end;
+            return states;
+        end;
+
+        -- 3. Universal recursive scanner for Frost, Gasolina, Extension, LCsense, Aesthetic
+        local function scan_table(t, cur_state)
+            if type(t) ~= "table" then return end;
+            for k, v in pairs(t) do
+                local ks = tostring(k):lower();
+                local st_detect = cur_state;
+                for name, num in pairs(name_map) do
+                    if ks:find(name, 1, true) then
+                        st_detect = num;
+                        break;
+                    end;
+                end;
+
+                if type(v) == "table" then
+                    scan_table(v, st_detect);
+                else
+                    local s = st_detect and states[st_detect] or states[1];
+                    local num = tonumber(v);
+                    if ks:find("fake_left") or ks:find("fakelimit_l") or ks:find("desync_left") or ks:find("left_limit") or ks:find("left_desync") then
+                        if num then s.left_limit = math.min(60, math.max(0, math.floor(num))) end;
+                    elseif ks:find("fake_right") or ks:find("fakelimit_r") or ks:find("desync_right") or ks:find("right_limit") or ks:find("right_desync") then
+                        if num then s.right_limit = math.min(60, math.max(0, math.floor(num))) end;
+                    elseif ks:find("yaw_left") or ks:find("yaw_l") or ks:find("offset_left") or ks:find("yaw_add_l") then
+                        if num then s.yaw_left = math.floor(num) end;
+                    elseif ks:find("yaw_right") or ks:find("yaw_r") or ks:find("offset_right") or ks:find("yaw_add_r") then
+                        if num then s.yaw_right = math.floor(num) end;
+                    elseif ks:find("yaw_offset") or ks:find("base_yaw") or ks:find("yaw_add") or (ks == "yaw" and num) then
+                        if num then s.yaw_offset = math.floor(num) end;
+                    elseif ks:find("jitter") or ks:find("modifier") then
+                        if type(v) == "string" then
+                            s.modifier = norm_mod(v);
+                        elseif num and num ~= 0 then
+                            s.modifier_offset = math.floor(num);
+                        end;
+                    elseif ks:find("defensive") or ks:find("flick") or ks:find("break_lc") then
+                        if type(v) == "boolean" then
+                            if v == true then
+                                s.has_defensive = true;
+                                s.defensive_aa = true;
+                                if ks:find("flick") then s.defensive_flick = true; end;
+                                if s.defensive_pitch == "Disabled" then s.defensive_pitch = "Down"; end;
+                                if s.defensive_yaw == "Disabled" then s.defensive_yaw = "Static"; end;
+                            else
+                                s.has_defensive = false;
+                                s.defensive_aa = false;
+                                s.defensive_pitch = "Disabled";
+                                s.defensive_yaw = "Disabled";
+                                s.defensive_flick = false;
+                            end;
+                        elseif type(v) == "string" then
+                            if ks:find("pitch") then
+                                s.defensive_pitch = norm_def_pitch(v);
+                                if s.defensive_pitch ~= "Disabled" then s.defensive_aa = true; s.has_defensive = true; end;
+                            elseif ks:find("yaw") or ks:find("mode") then
+                                s.defensive_yaw = norm_def_yaw(v);
+                                if s.defensive_yaw ~= "Disabled" then s.defensive_aa = true; s.has_defensive = true; end;
+                            end;
+                        elseif num then
+                            if ks:find("pitch") then s.defensive_pitch_angle = math.floor(num);
+                            elseif ks:find("yaw") or ks:find("angle") then s.defensive_yaw_angle = math.floor(num);
+                            end;
+                        end;
+                    end;
+                    s.body = true;
+                end;
+            end;
+        end;
+
+        scan_table(data, nil);
+        return states;
+    end,
+
+    apply_and_save_converted_preset = function(self, parsed_data, format_type, target_name, should_save)
+        if not parsed_data or type(parsed_data) ~= "table" then return false end;
+
+        local setup_obj = l_pui_0.setup({
+            [1] = self.home.elements, 
+            [2] = self.antiaim.elements, 
+            [3] = self.antiaim.data, 
+            [4] = self.other.elements
+        }, true);
+
+        if format_type == "caelestis" then
+            _clean_preset_bots(parsed_data);
+            if setup_obj and setup_obj.load then
+                _G.__NYANZA_LOADING_PRESET = true;
+                pcall(function() setup_obj:load(parsed_data); end);
+                _G.__NYANZA_LOADING_PRESET = false;
+            end;
+            if should_save and target_name and target_name ~= "" then
+                local encoded = l_base64_0.encode(msgpack.pack(parsed_data));
+                self.database[target_name] = encoded;
+                db.admin555_555 = self.database; db.snapshot555_555 = self.database;
+                self:save_preset_to_disk(target_name, encoded);
+                self:update(target_name);
+                self.home.elements.preset_input:set(target_name);
+            end;
+            return true;
+        end;
+
+        if format_type == "nl_tabs" then
+            local tabs = self:get_nl_cfg_tabs();
+            local count = 0;
+            for t_name, t_data in pairs(parsed_data) do
+                local ref = tabs[t_name];
+                if ref and ref.import then
+                    pcall(ref.import, ref, t_data);
+                    count = count + 1;
+                end;
+            end;
+            if should_save and target_name and target_name ~= "" then
+                local snap = setup_obj:save();
+                _clean_preset_bots(snap);
+                local encoded = l_base64_0.encode(msgpack.pack(snap));
+                self.database[target_name] = encoded;
+                db.admin555_555 = self.database; db.snapshot555_555 = self.database;
+                self:save_preset_to_disk(target_name, encoded);
+                self:update(target_name);
+                self.home.elements.preset_input:set(target_name);
+            end;
+            return true;
+        end;
+
+        -- Foreign Lua AA preset (Gingersense, LuaSense, Frost, Gasolina, Godmodki, etc.)
+        local extracted_states = self:extract_aa_settings(parsed_data);
+
+        -- Check if any state has defensive enabled
+        local any_defensive = false;
+        for st = 1, 9 do
+            if extracted_states[st] and extracted_states[st].has_defensive then
+                any_defensive = true;
+                break;
+            end;
+        end;
+
+        -- 1. Apply global defensive switches
+        if self.antiaim and self.antiaim.elements then
+            if self.antiaim.elements.unmatched_table and self.antiaim.elements.unmatched_table.disable_defensive then
+                pcall(function()
+                    self.antiaim.elements.unmatched_table.disable_defensive:set(not any_defensive);
+                end);
+            end;
+            if self.antiaim.elements.force_break_lc then
+                pcall(function()
+                    local active_break = {};
+                    for st = 1, 9 do
+                        if extracted_states[st] and extracted_states[st].has_defensive then
+                            table.insert(active_break, self.antiaim.e_states[st]);
+                        end;
+                    end;
+                    self.antiaim.elements.force_break_lc:set(active_break);
+                end);
+            end;
+        end;
+
+        -- 2. DIRECTLY update active UI elements in self.antiaim.data so sliders/combos move in the menu immediately!
+        if self.antiaim and self.antiaim.data then
+            for st = 1, 9 do
+                local st_data = extracted_states[st];
+                if st_data then
+                    for tm = 1, 2 do
+                        local st_elem = self.antiaim.data[st] and self.antiaim.data[st][tm];
+                        if st_elem then
+                            pcall(function()
+                                -- Base AA
+                                if st_elem.yaw_mode and st_data.yaw_mode then st_elem.yaw_mode:set(st_data.yaw_mode); end;
+                                if st_elem.yaw_offset and st_data.yaw_offset then st_elem.yaw_offset:set(st_data.yaw_offset); end;
+                                if st_elem.yaw_left and st_data.yaw_left then st_elem.yaw_left:set(st_data.yaw_left); end;
+                                if st_elem.yaw_right and st_data.yaw_right then st_elem.yaw_right:set(st_data.yaw_right); end;
+                                if st_elem.modifier and st_data.modifier then st_elem.modifier:set(st_data.modifier); end;
+                                if st_elem.modifier_offset and st_data.modifier_offset then st_elem.modifier_offset:set(st_data.modifier_offset); end;
+                                if st_elem.body then st_elem.body:set(true); end;
+                                if st_elem.body_options then
+                                    if st_elem.body_options.left_limit and st_data.left_limit then st_elem.body_options.left_limit:set(st_data.left_limit); end;
+                                    if st_elem.body_options.right_limit and st_data.right_limit then st_elem.body_options.right_limit:set(st_data.right_limit); end;
+                                    if st_elem.body_options.master then st_elem.body_options.master:set(1); end;
+                                end;
+
+                                -- Defensive AA
+                                if st_data.has_defensive then
+                                    if st_elem.defensive_aa then st_elem.defensive_aa:set(true); end;
+                                    if st_elem.defensive_pitch then st_elem.defensive_pitch:set(st_data.defensive_pitch or "Down"); end;
+                                    if st_elem.defensive_pitch_angle then st_elem.defensive_pitch_angle:set(st_data.defensive_pitch_angle or -89); end;
+                                    if st_elem.defensive_yaw then st_elem.defensive_yaw:set(st_data.defensive_yaw or "Static"); end;
+                                    if st_elem.defensive_yaw_angle then st_elem.defensive_yaw_angle:set(st_data.defensive_yaw_angle or 180); end;
+                                    if st_elem.defensive_yaw_spin_speed and st_data.defensive_yaw_spin_speed then
+                                        st_elem.defensive_yaw_spin_speed:set(st_data.defensive_yaw_spin_speed);
+                                    end;
+                                    if st_elem.defensive_activation_mode and st_data.defensive_activation_mode then
+                                        st_elem.defensive_activation_mode:set(st_data.defensive_activation_mode);
+                                    end;
+                                    if st_elem.defensive_flick then
+                                        st_elem.defensive_flick:set(st_data.defensive_flick or false);
+                                        if st_data.defensive_flick then
+                                            if st_elem.flick_mode then st_elem.flick_mode:set(st_data.flick_mode or "Constant Invert"); end;
+                                            if st_elem.flick_pitch then st_elem.flick_pitch:set(st_data.flick_pitch or -89); end;
+                                            if st_elem.flick_yaw then st_elem.flick_yaw:set(st_data.flick_yaw or 90); end;
+                                            if st_elem.flick_speed then st_elem.flick_speed:set(st_data.flick_speed or 12); end;
+                                        end;
+                                    end;
+                                else
+                                    -- Explicitly TURN OFF defensive AA for this state!
+                                    if st_elem.defensive_aa then st_elem.defensive_aa:set(false); end;
+                                    if st_elem.defensive_pitch then st_elem.defensive_pitch:set("Disabled"); end;
+                                    if st_elem.defensive_pitch_angle then st_elem.defensive_pitch_angle:set(-89); end;
+                                    if st_elem.defensive_yaw then st_elem.defensive_yaw:set("Disabled"); end;
+                                    if st_elem.defensive_flick then st_elem.defensive_flick:set(false); end;
+                                end;
+                            end);
+                        end;
+                    end;
+                end;
+            end;
+        end;
+
+        -- 3. Directly update Neverlose native Anti Aim angles tab
+        pcall(function()
+            local aa_enable = ui.find("Aimbot", "Anti Aim", "Angles", "Enabled");
+            if aa_enable then aa_enable:set(true); end;
+            local st1 = extracted_states[1];
+            if st1 then
+                local aa_yaw = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw", "Offset") or ui.find("Aimbot", "Anti Aim", "Angles", "Yaw Offset");
+                if aa_yaw and st1.yaw_offset then aa_yaw:set(st1.yaw_offset); end;
+                local aa_l = ui.find("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Left Limit") or ui.find("Aimbot", "Anti Aim", "Angles", "Left Limit");
+                if aa_l and st1.left_limit then aa_l:set(st1.left_limit); end;
+                local aa_r = ui.find("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Right Limit") or ui.find("Aimbot", "Anti Aim", "Angles", "Right Limit");
+                if aa_r and st1.right_limit then aa_r:set(st1.right_limit); end;
+            end;
+        end);
+
+        -- 4. Snapshot current live configuration with setup_obj:save() so disk file is valid Caelestis msgpack
+        local live_cfg = setup_obj:save();
+        if live_cfg and type(live_cfg[3]) == "table" then
+            for st = 1, 9 do
+                local st_data = extracted_states[st];
+                if st_data then
+                    for tm = 1, 2 do
+                        local entry = live_cfg[3][st] and live_cfg[3][st][tm];
+                        if entry then
+                            entry.yaw_mode = st_data.yaw_mode or "Left / Right";
+                            entry.yaw_offset = st_data.yaw_offset or 0;
+                            entry.yaw_left = st_data.yaw_left or 0;
+                            entry.yaw_right = st_data.yaw_right or 0;
+                            entry.modifier = st_data.modifier or "Disabled";
+                            entry.modifier_offset = st_data.modifier_offset or 0;
+                            entry.body = true;
+                            if entry.body_options and type(entry.body_options) == "table" then
+                                entry.body_options.left_limit = st_data.left_limit or 58;
+                                entry.body_options.right_limit = st_data.right_limit or 58;
+                                entry.body_options.master = 1;
+                            end;
+                            -- Defensive fields in serialized entry
+                            entry.defensive_aa = st_data.has_defensive and true or false;
+                            entry.defensive_pitch = st_data.has_defensive and (st_data.defensive_pitch or "Down") or "Disabled";
+                            entry.defensive_pitch_angle = st_data.has_defensive and (st_data.defensive_pitch_angle or -89) or -89;
+                            entry.defensive_yaw = st_data.has_defensive and (st_data.defensive_yaw or "Static") or "Disabled";
+                            entry.defensive_yaw_angle = st_data.has_defensive and (st_data.defensive_yaw_angle or 180) or 180;
+                            entry.defensive_yaw_spin_speed = st_data.has_defensive and (st_data.defensive_yaw_spin_speed or 36) or 36;
+                            entry.defensive_activation_mode = st_data.has_defensive and (st_data.defensive_activation_mode or "Always") or "Always";
+                            entry.defensive_flick = (st_data.has_defensive and st_data.defensive_flick) and true or false;
+                            entry.flick_mode = st_data.flick_mode or "Constant Invert";
+                            entry.flick_pitch = st_data.flick_pitch or -89;
+                            entry.flick_yaw = st_data.flick_yaw or 90;
+                            entry.flick_speed = st_data.flick_speed or 12;
+                        end;
+                    end;
+                end;
+            end;
+        end;
+
+        if should_save and target_name and target_name ~= "" then
+            _clean_preset_bots(live_cfg);
+            local encoded = l_base64_0.encode(msgpack.pack(live_cfg));
+            self.database[target_name] = encoded;
+            db.admin555_555 = self.database; db.snapshot555_555 = self.database;
+            self:save_preset_to_disk(target_name, encoded);
+            self:update(target_name);
+            self.home.elements.preset_input:set(target_name);
+        end;
+        return true;
+    end,
+
+    import_pizda_all = function(self)
+        local catalog = self:get_pizda_catalog();
+        if not catalog or #catalog == 0 then
+            common.add_event("No pizda presets found in folder", "triangle-exclamation");
+            cvar.playvol:call("ui\\weapon_cant_buy", 1);
+            return;
+        end;
+
+        local count = 0;
+        for _, item in ipairs(catalog) do
+            if item.raw and #item.raw > 0 then
+                local parsed, fmt = self:decode_any_preset(item.raw);
+                if parsed then
+                    local target_name = string.format("[%s] %s", item.source:sub(1, 4), item.name);
+                    if #target_name > 16 then target_name = target_name:sub(1, 16); end;
+                    local ok = pcall(function()
+                        self:apply_and_save_converted_preset(parsed, fmt, target_name, true);
+                    end);
+                    if ok then count = count + 1 end;
+                end;
+            end;
+        end;
+
+        self:update();
+        common.add_event("Imported " .. tostring(count) .. " presets from pizda into Caelestis!", "gear");
+        cvar.playvol:call("ui\\beepclear", 1);
+    end,
+
     init = function(v35)
         -- upvalues: l_pui_0 (ref)
         v35.database = db.admin555_555 or db.snapshot555_555 or {};
@@ -1405,6 +2392,15 @@ v35:init_fs();
                 end;
             end;
         end);
+        if type(v35.database) == "table" then
+            v35.database["presets1ngles"] = nil;
+            v35.database["presets1ngles.cfg"] = nil;
+            v35.database["presets1ngles.txt"] = nil;
+            v35.database["1ngles"] = nil;
+            v35.database["1ngles.cfg"] = nil;
+            v35.database["[LuaS] 1ngles"] = nil;
+            v35.database["[LuaS] 1ngles.cfg"] = nil;
+        end;
         db.admin555_555 = v35.database; db.admin555_555 = v35.database; db.snapshot555_555 = v35.database;
         pcall(function() v35.home.elements.preset_input:set(""); end);
         pcall(function() v35:update(); end);
@@ -1474,10 +2470,19 @@ v35:init_fs();
 update = function(v43, select_name)
         local sys_list = v43.system_presets or {};
         local custom_map = {};
+        local blocked_presets = {
+            ["presets1ngles"] = true,
+            ["presets1ngles.cfg"] = true,
+            ["presets1ngles.txt"] = true,
+            ["1ngles"] = true,
+            ["1ngles.cfg"] = true,
+            ["[LuaS] 1ngles"] = true,
+            ["[LuaS] 1ngles.cfg"] = true
+        };
 
         if type(v43.database) == "table" then
             for k, _ in pairs(v43.database) do
-                if not v43:is_system_preset(k) and not v43:is_separator(k) then
+                if not blocked_presets[tostring(k)] and not v43:is_system_preset(k) and not v43:is_separator(k) then
                     custom_map[k] = true;
                 end;
             end;
@@ -1486,7 +2491,7 @@ update = function(v43, select_name)
         local ok_man, manifest = pcall(v43.read_manifest, v43);
         if ok_man and manifest and type(manifest.presets) == "table" then
             for p_name, _ in pairs(manifest.presets) do
-                if not v43:is_system_preset(p_name) and not v43:is_separator(p_name) then
+                if not blocked_presets[tostring(p_name)] and not v43:is_system_preset(p_name) and not v43:is_separator(p_name) then
                     custom_map[p_name] = true;
                 end;
             end;
@@ -1597,21 +2602,34 @@ update = function(v43, select_name)
     end, 
     load = function(v70)
         -- upvalues: l_pui_0 (ref), l_base64_0 (ref)
+        local inp = v70.home.elements.preset_input:get();
+        if inp then inp = inp:match("^%s*(.-)%s*$"); end;
+
         local v71 = v70.home.elements.preset_list:get();
         local list_items = v70.home.elements.preset_list:list();
         local v72 = list_items and list_items[v71];
-if not v72 or v70:is_separator(v72) then
-            local inp = v70.home.elements.preset_input:get();
+
+        -- If input box has text, check if user specifically typed a preset name or file
+        if inp and inp ~= "" and not v70:is_separator(inp) then
+            local inp_clean = inp:gsub("%.txt$", ""):gsub("%.cfg$", "");
+            if v70.database[inp] or v70.database[inp_clean] or inp_clean:lower():find("angles") or inp_clean:lower():find("meta") then
+                v72 = inp;
+            end;
+        end;
+
+        if not v72 or v70:is_separator(v72) then
             if inp and inp ~= "" and not v70:is_separator(inp) then
                 v72 = inp;
             end;
         end;
+
         if not v72 or v70:is_separator(v72) then
             common.add_event("Failed to load: select a preset", "triangle-exclamation");
             cvar.playvol:call("ui\\weapon_cant_buy", 1);
             return;
         end;
-        local raw_data = v70.database[v72];
+
+        local raw_data = v70.database[v72] or v70.database[v72:gsub("%.txt$", ""):gsub("%.cfg$", "")];
         if not raw_data or raw_data == "" then
             local clean_sel = tostring(v72);
             clean_sel = clean_sel:gsub("\aDEFAULT", ""):gsub("\a{.-}", ""):gsub("\a%x%x%x%x%x%x%x%x", ""):gsub("\a%x%x%x%x%x%x", "");
@@ -1628,31 +2646,64 @@ if not v72 or v70:is_separator(v72) then
                     break
                 end;
             end;
-            if (not raw_data or raw_data == "") and sel_lower == "delayed" then
-                common.add_event("Delayed preset is empty!", "triangle-exclamation");
-                cvar.playvol:call("ui\\beepclear", 1);
-                return;
+        end;
+
+        -- If still not found, search files directly on disk / in pizda catalog!
+        if not raw_data or raw_data == "" then
+            local candidates = {
+                v72,
+                v72 .. ".cfg",
+                v72 .. ".txt",
+                v72:gsub("%.txt$", "") .. ".cfg",
+                v72:gsub("%.cfg$", "") .. ".txt"
+            };
+            for _, cand in ipairs(candidates) do
+                local fc = v70:read_pizda_file(cand);
+                if not fc or #fc == 0 then
+                    local ok_r, f_r = pcall(files.read, v70.PRESET_DIR .. "/" .. cand);
+                    if ok_r and f_r and #f_r > 0 then fc = f_r; end;
+                end;
+                if fc and #fc > 10 then
+                    raw_data = fc;
+                    break
+                end;
             end;
         end;
+
         if not raw_data or raw_data == "" then
             common.add_event("Failed to load: preset not found", "triangle-exclamation");
             cvar.playvol:call("ui\\weapon_cant_buy", 1);
             return;
-        else
-            local clean_str = tostring(raw_data):gsub("#[^\r\n]*", ""):gsub("[\r\n\t ]+", ""):gsub("^[\"']+", ""):gsub("[\"']+$", "");
-            local decode_ok, v74 = pcall(l_base64_0.decode, clean_str);
-            if not decode_ok or not v74 or v74 == "" then
-                common.add_event("Failed to load: decode error", "triangle-exclamation");
+        end;
+
+        -- First check if raw_data is a foreign format (raw JSON like LuaSense presets1ngles.txt)
+        local foreign_parsed, foreign_fmt = v70:decode_any_preset(raw_data);
+        if foreign_parsed and foreign_fmt ~= "caelestis" then
+            local apply_ok = v70:apply_and_save_converted_preset(foreign_parsed, foreign_fmt, nil, false);
+            if apply_ok then
+                common.add_event("Preset converted & loaded (" .. tostring(foreign_fmt) .. ")", "gear");
+                cvar.playvol:call("ui\\beepclear", 1);
+            else
+                common.add_event("Failed to convert preset", "triangle-exclamation");
                 cvar.playvol:call("ui\\weapon_cant_buy", 1);
-                return;
             end;
-            local unpack_ok, unpacked = pcall(msgpack.unpack, v74);
-            if not unpack_ok or type(unpacked) ~= "table" then
-                common.add_event("Failed to load: unpack error", "triangle-exclamation");
-                cvar.playvol:call("ui\\weapon_cant_buy", 1);
-                return;
-            end;
-            _clean_preset_bots(unpacked);
+            return;
+        end;
+
+        local clean_str = tostring(raw_data):gsub("#[^\r\n]*", ""):gsub("[\r\n\t ]+", ""):gsub("^[\"']+", ""):gsub("[\"']+$", "");
+        local decode_ok, v74 = pcall(l_base64_0.decode, clean_str);
+        if not decode_ok or not v74 or v74 == "" then
+            common.add_event("Failed to load: decode error", "triangle-exclamation");
+            cvar.playvol:call("ui\\weapon_cant_buy", 1);
+            return;
+        end;
+        local unpack_ok, unpacked = pcall(msgpack.unpack, v74);
+        if not unpack_ok or type(unpacked) ~= "table" then
+            common.add_event("Failed to load: unpack error", "triangle-exclamation");
+            cvar.playvol:call("ui\\weapon_cant_buy", 1);
+            return;
+        end;
+        _clean_preset_bots(unpacked);
             local load_ok = pcall(function()
                 local v73 = l_pui_0.setup({
                     [1] = v70.home.elements, 
@@ -1683,7 +2734,6 @@ if not v72 or v70:is_separator(v72) then
                 cvar.playvol:call("ui\\beepclear", 1);
             end;
             return;
-        end;
     end, 
     delete = function(v75)
         local v76 = v75.home.elements.preset_list:get();
@@ -1726,98 +2776,70 @@ if not v72 or v70:is_separator(v72) then
     import = function(v81)
         -- upvalues: l_pui_0 (ref), l_base64_0 (ref), l_clipboard_0 (ref)
         local raw_clip = l_clipboard_0.get();
-        if not raw_clip or raw_clip == "" then
-            common.add_event("Clipboard is empty", "triangle-exclamation");
-            cvar.playvol:call("ui\\weapon_cant_buy", 1);
-            return;
-        end;
-
-        local str = tostring(raw_clip):gsub("#[^\r\n]*", ""):gsub("[\r\n\t ]+", ""):gsub("^[\"']+", ""):gsub("[\"']+$", "");
-        if #str == 0 then
-            common.add_event("Clipboard is empty", "triangle-exclamation");
-            cvar.playvol:call("ui\\weapon_cant_buy", 1);
-            return;
-        end;
-
-        local decode_ok, decoded = pcall(l_base64_0.decode, str);
-        if not decode_ok or not decoded or decoded == "" then
-            common.add_event("Invalid config: Base64 decode failed", "triangle-exclamation");
-            cvar.playvol:call("ui\\weapon_cant_buy", 1);
-            return;
-        end;
-
-        local unpack_ok, unpacked = pcall(msgpack.unpack, decoded);
-        if not unpack_ok or type(unpacked) ~= "table" then
-            common.add_event("Invalid config: Not a valid preset", "triangle-exclamation");
-            cvar.playvol:call("ui\\weapon_cant_buy", 1);
-            return;
-        end;
-
         local input_name = v81.home.elements.preset_input:get();
         if input_name then
             input_name = input_name:match("^%s*(.-)%s*$");
+            if input_name == "" then input_name = nil; end;
         end;
 
-        local cur_idx = v81.home.elements.preset_list:get();
-        local list_items = v81.home.elements.preset_list:list();
-        local cur_sel = list_items and list_items[cur_idx];
+        local clip_str = raw_clip and tostring(raw_clip):match("^%s*(.-)%s*$") or "";
 
-        local target_name = nil;
-        if input_name and #input_name > 0 and not v81:is_system_preset(input_name) and not v81:is_separator(input_name) then
-            target_name = input_name;
-        elseif cur_sel and cur_sel ~= "" and not v81:is_system_preset(cur_sel) and not v81:is_separator(cur_sel) then
-            target_name = cur_sel;
-        else
-            local base_name = "Imported";
-            target_name = base_name;
-            local counter = 1;
-            while v81.database[target_name] or v81:is_system_preset(target_name) do
-                target_name = base_name .. " " .. tostring(counter);
-                counter = counter + 1;
+        -- 1. Check if user typed or copied "all" or "pizda" -> import all presets from pizda
+        local check_all = (clip_str:lower() == "all" or clip_str:lower() == "pizda" or (input_name and (input_name:lower() == "all" or input_name:lower() == "pizda")));
+        if check_all then
+            v81:import_pizda_all();
+            return;
+        end;
+
+        -- 2. Try to decode directly from clipboard (handles all 10+ formats)
+        local parsed, fmt = nil, nil;
+        if #clip_str > 0 then
+            parsed, fmt = v81:decode_any_preset(clip_str);
+        end;
+
+        -- 3. If clipboard wasn't a valid encoded preset, check if clipboard or input_name is a preset name from pizda
+        local matched_item = nil;
+        if not parsed then
+            local function find_in_pizda(query)
+                if not query or query == "" then return nil end;
+                local q = query:lower():gsub("%.txt$", ""):gsub("%.cfg$", ""):gsub("%.lua$", ""):gsub("[%s%-_%[%]]+", "");
+                if #q < 2 then return nil end;
+                local catalog = v81:get_pizda_catalog();
+                for _, item in ipairs(catalog) do
+                    local name_clean = item.name:lower():gsub("[%s%-_%[%]]+", "");
+                    local id_clean = item.id:lower():gsub("[%s%-_%[%]]+", "");
+                    if name_clean == q or id_clean == q or name_clean:find(q, 1, true) or id_clean:find(q, 1, true) or q:find(name_clean, 1, true) or q:find(id_clean, 1, true) then
+                        return item;
+                    end;
+                end;
+                return nil;
+            end;
+
+            matched_item = (input_name and find_in_pizda(input_name)) or (#clip_str > 0 and find_in_pizda(clip_str));
+            if matched_item and matched_item.raw and #matched_item.raw > 0 then
+                parsed, fmt = v81:decode_any_preset(matched_item.raw);
             end;
         end;
 
-        if #target_name > 16 then
-            target_name = target_name:sub(1, 16);
+        if not parsed then
+            if #clip_str == 0 and not input_name then
+                common.add_event("Clipboard is empty! Copy a preset code or preset name from pizda.", "triangle-exclamation");
+            else
+                common.add_event("Unrecognized preset format! Copy valid preset code or name from pizda.", "triangle-exclamation");
+            end;
+            cvar.playvol:call("ui\\weapon_cant_buy", 1);
+            return;
         end;
 
-        v81.database[target_name] = str;
-        db.admin555_555 = v81.database; db.snapshot555_555 = v81.database;
-        v81:save_preset_to_disk(target_name, str);
-
-        _clean_preset_bots(unpacked);
-        local load_ok = pcall(function()
-            local setup_obj = l_pui_0.setup({
-                [1] = v81.home.elements, 
-                [2] = v81.antiaim.elements, 
-                [3] = v81.antiaim.data, 
-                [4] = v81.other.elements
-            }, true);
-            if setup_obj and setup_obj.load then
-                _G.__NYANZA_LOADING_PRESET = true;
-                pcall(function() setup_obj:load(unpacked); end);
-                _G.__NYANZA_LOADING_PRESET = false;
-            end;
-            if v81.home and v81.home.elements and v81.home.elements.watermark_options and v81.home.elements.watermark_options.label and v81.home.elements.watermark_options.label:get() == "snapshot" then
-                v81.home.elements.watermark_options.label:set("caelestis.lua");
-            end;
-            if v81.other and v81.other.update_sections then
-                pcall(v81.other.update_sections);
-            end;
-            if v81.other and v81.other.elements and v81.other.elements.aim_tools and v81.other.elements.aim_tools.update_vis then
-                pcall(v81.other.elements.aim_tools.update_vis);
-            end;
-        end);
-
-        v81:update(target_name);
-        v81.home.elements.preset_input:set(target_name);
-
-        if load_ok then
-            common.add_event("Preset '" .. target_name .. "' imported & saved to folder", "gear");
+        -- 4. Apply imported preset to UI/anti-aim WITHOUT auto-saving!
+        local ok = v81:apply_and_save_converted_preset(parsed, fmt, nil, false);
+        if ok then
+            local src_label = matched_item and ("'" .. matched_item.name .. "' (" .. matched_item.source .. ")") or tostring(fmt);
+            common.add_event("Preset imported (" .. src_label .. ") - Not saved", "gear");
             cvar.playvol:call("ui\\beepclear", 1);
         else
-            common.add_event("Preset '" .. target_name .. "' imported with warnings", "triangle-exclamation");
-            cvar.playvol:call("ui\\beepclear", 1);
+            common.add_event("Failed to apply imported preset", "triangle-exclamation");
+            cvar.playvol:call("ui\\weapon_cant_buy", 1);
         end;
         return;
     end, 
@@ -1900,38 +2922,15 @@ if not v72 or v70:is_separator(v72) then
             [9] = "\v\239\129\185  \rManuals"
         };
         v100.elements = {
-            live_state = v100.groups.states:label("\v\226\151\143 \rSelected: \a9ca7e1ffStanding [CT] \a{Small Text}| Side: \a9ca7e1ffLeft"),
-            teams = v100.groups.states:list("\v\239\131\128  \rSelect the state you want to configure.", v100.e_teams), 
+            teams = v100.groups.states:list("", v100.e_teams), 
             states = v100.groups.states:list("", v100.e_states), 
             force_break_lc = v100.groups.snap_builder:selectable("\a{Small Text}\226\128\162  \rForce Break LC", v100.e_states), 
             hide_shots = v100.groups.snap_builder:combo("    \a{Small Text}\226\164\183  \rHide Shots", "Favor Fire Rate", "Favor Fake Lag", "Break LC"), 
             options_gear = v100.groups.options:label("\v\226\128\162  \rOptions  \v\239\134\178"), 
-            options_table = {}
+            options_table = {},
+            unmatched_features = v100.groups.options:label("\v\f<trophy>    \rUnmatched features"),
+            unmatched_table = {}
         };
-        local function update_menu_state_label()
-            pcall(function()
-                local me = entity.get_local_player();
-                local st_names = { [1] = "Standing", [2] = "Running", [3] = "Slowing", [4] = "Crouching", [5] = "Sneaking", [6] = "Air", [7] = "Air Crouching", [8] = "Freestanding", [9] = "Manuals" };
-                local ui_tm_idx = v100.elements.teams:get();
-                local ui_st_idx = v100.elements.states:get();
-                local cur_tm_name = (ui_tm_idx == 1) and "CT" or "T";
-                local cur_st_name = st_names[ui_st_idx] or "Standing";
-                local cur_side = rage.antiaim:inverter() and "Right" or "Left";
-                if not me or not me:is_alive() then
-                    v100.elements.live_state:set(string.format("\v\226\151\143 \rSelected: \a9ca7e1ff%s [%s] \a{Small Text}| Side: \a9ca7e1ff%s", cur_st_name, cur_tm_name, cur_side));
-                else
-                    local cur_cur_label = v100.elements.live_state:get() or "";
-                    local act_part = cur_cur_label:match("Active: [^|]+") or "";
-                    if act_part ~= "" then
-                        v100.elements.live_state:set(string.format("\v\226\151\143 \r%s\a{Small Text}| Edit: \a9ca7e1ff%s [%s]", act_part, cur_st_name, cur_tm_name));
-                    else
-                        v100.elements.live_state:set(string.format("\v\226\151\143 \rSelected: \a9ca7e1ff%s [%s] \a{Small Text}| Side: \a9ca7e1ff%s", cur_st_name, cur_tm_name, cur_side));
-                    end;
-                end;
-            end);
-        end;
-        v100.elements.teams:set_callback(update_menu_state_label);
-        v100.elements.states:set_callback(update_menu_state_label);
         local v101 = _wrap_gear(v100.elements.options_gear:create());
         v100.elements.options_table = {
             anti_brute = v101:switch("\v\226\128\162  \rAnti-Bruteforce  \v\239\130\145"), 
@@ -1942,7 +2941,6 @@ if not v72 or v70:is_separator(v72) then
             legit_aa_pitch = v101:switch("    \v\226\164\183  \rPitch 0 on Use", true), 
             landing_pitch = v101:switch("\v\226\128\162  \rPitch 0 on Landing  \v\239\154\137"), 
             safe_head = v101:selectable("\v\226\128\162  \rSafe Head  \v\238\141\186", "\v\239\134\131     \rStanding", "\v\239\134\147   \rCrouching  \a{Small Text}+  \v\238\139\142  \rSneaking", "\v\238\149\135  \rAir Crouching  \a{Small Text}+  \rKnife/Taser"), 
-            safe_head_gap = v101:slider("    \v\226\164\183  \rHeight Gap", 10, 100, 35, nil, "u"), 
             safe_head_weapon = v101:combo("    \v\226\164\183  \rWeapons", "Knife/Taser", "Knife Only", "Taser Only", "All Weapons"), 
             safe_head_limit = v101:slider("    \v\226\164\183  \rDesync Limit", 0, 60, 58, nil, "\194\176"), 
             avoid_backstab = v101:switch("\v\226\128\162  \rAvoid Backstab  \v\239\155\181"), 
@@ -1964,18 +2962,76 @@ if not v72 or v70:is_separator(v72) then
                 end)
             end
         end
+
+        local v_unm = _wrap_gear(v100.elements.unmatched_features:create());
+        v100.elements.unmatched_table = {
+            disable_defensive = v_unm:switch("\v\f<solar-system>    \rDisable defensive", false),
+            warmup_fake_duck = v_unm:switch("\v\f<duck>    \rFake duck on warmup", false)
+        };
+        for _, elem in pairs(v100.elements.unmatched_table) do
+            if elem and (type(elem) == "table" or type(elem) == "userdata") then
+                pcall(function()
+                    if elem.callbacks == nil then elem.callbacks = {} end
+                    _guard_pui_element(elem)
+                end)
+            end
+        end
+
+        v100.elements.unmatched_features:tooltip("Special and unmatched anti-aim features.");
+        if v100.elements.unmatched_table.disable_defensive then
+            pcall(function()
+                v100.elements.unmatched_table.disable_defensive:tooltip("Disables defensive anti-aim and exploits (hidden pitch and yaw).");
+            end);
+        end;
+        if v100.elements.unmatched_table.warmup_fake_duck then
+            pcall(function()
+                v100.elements.unmatched_table.warmup_fake_duck:tooltip("Automatically forces fake duck during warmup period.");
+            end);
+        end;
+
+        if v100.elements.unmatched_table.disable_defensive then
+            pcall(function()
+                v100.elements.unmatched_table.disable_defensive:set_callback(function(elem)
+                    if not elem:get() then
+                        local snap_ref = v722 and v722.references and v722.references.antiaim and v722.references.antiaim.angles and v722.references.antiaim.angles.extract_yaw and v722.references.antiaim.angles.extract_yaw.snap;
+                        if not snap_ref and l_pui_0 then
+                            pcall(function() snap_ref = l_pui_0.find("Aimbot", "Anti Aim", "Angles", "yaw", "Hidden"); end);
+                        end;
+                        if snap_ref and snap_ref.override then
+                            pcall(snap_ref.override, snap_ref);
+                        end;
+                    end;
+                end);
+            end);
+        end;
+
+        if v100.elements.unmatched_table.warmup_fake_duck then
+            pcall(function()
+                v100.elements.unmatched_table.warmup_fake_duck:set_callback(function(elem)
+                    if not elem:get() then
+                        local fd_ref = v722 and v722.references and v722.references.antiaim and v722.references.antiaim.misc and v722.references.antiaim.misc.fake_duck;
+                        if not fd_ref and l_pui_0 then
+                            pcall(function() fd_ref = l_pui_0.find("Aimbot", "Anti Aim", "Misc", "Fake Duck"); end);
+                        end;
+                        if fd_ref and fd_ref.override then
+                            pcall(fd_ref.override, fd_ref);
+                        end;
+                    end;
+                end);
+            end);
+        end;
+
         v100.elements.options_table.anti_brute_mode:depend(v100.elements.options_table.anti_brute);
         v100.elements.options_table.anti_brute_shift:depend(v100.elements.options_table.anti_brute, { [1] = v100.elements.options_table.anti_brute_mode, [2] = "Shift Yaw", [3] = "Randomize" });
         v100.elements.options_table.anti_brute_duration:depend(v100.elements.options_table.anti_brute);
         v100.elements.options_table.legit_aa_pitch:depend(v100.elements.options_table.legit_aa);
-        v100.elements.options_table.safe_head_gap:depend({ [1] = v100.elements.options_table.safe_head, [2] = function(v) return v and #v:get() > 0 end });
         v100.elements.options_table.safe_head_weapon:depend({ [1] = v100.elements.options_table.safe_head, [2] = function(v) return v and #v:get() > 0 end });
         v100.elements.options_table.safe_head_limit:depend({ [1] = v100.elements.options_table.safe_head, [2] = function(v) return v and #v:get() > 0 end });
         v100.elements.options_table.fake_lag_type:depend(v100.elements.options_table.fake_lag);
         v100.elements.options_table.anti_brute:tooltip("Detects enemy misses within ray distance and automatically inverts side or shifts yaw.");
         v100.elements.options_table.legit_aa:tooltip("Disables anti-aim and straightens pitch when holding E, defusing or planting the bomb.");
         v100.elements.options_table.landing_pitch:tooltip("Forces pitch to 0 during landing ticks to tuck head hitbox away from enemy crosshairs.");
-        v100.elements.options_table.safe_head:tooltip("Works only when the local player is hittable and positioned above the enemy.");
+        v100.elements.options_table.safe_head:tooltip("Safe Head activates automatically in the selected states, locking pitch down and setting 30 yaw offset.");
         v100.elements.options_table.avoid_backstab:tooltip("Faces knife enemies when they are close to avoid one hit backstabs.");
         v100.elements.options_table.fake_lag:tooltip("Don\226\128\153t use this if you throw nades with fake lag \226\128\148 it can break grenade helper lineups.");
         v100.elements.options_table.tweaks:tooltip("Select a condition to view and configure anti aim settings that will only apply during that condition.");
@@ -2075,6 +3131,16 @@ if not v72 or v70:is_separator(v72) then
                         }), 
                         modifier_offset = l_builder_0:slider("    \v\226\164\183  \rOffset##mod" .. uid, -180, 180, 0, nil, "\194\176"), 
                         modifier_spin_speed = l_builder_0:slider("    \v\226\164\183  \rSpin Speed##mod" .. uid, 1, 100, 20, nil, "\194\176/t"), 
+                        multi_modifier = l_builder_0:switch("\v\226\128\162  \rMulti Modifier  \v\239\151\189" .. uid):depend({
+                            [1] = l_states_0, 
+                            [2] = l_v103_0
+                        }, {
+                            [1] = l_teams_0, 
+                            [2] = v106
+                        }), 
+                        multi_modifier_mode = l_builder_0:combo("    \v\226\164\183  \rMode##mmod" .. uid, "Center", "Offset", "Random", "Spin", "3-Way", "5-Way", "Skitter", "Sway"), 
+                        multi_modifier_offset = l_builder_0:slider("    \v\226\164\183  \rOffset##mmod" .. uid, -180, 180, 30, nil, "\194\176"), 
+                        multi_modifier_speed = l_builder_0:slider("    \v\226\164\183  \rSpeed##mmod" .. uid, 1, 10, 2, nil, "t"), 
                         body = l_builder_0:switch("\v\226\128\162  \rDesync  \v\239\151\189" .. uid):depend({
                             [1] = l_states_0, 
                             [2] = l_v103_0
@@ -2410,7 +3476,8 @@ if not v72 or v70:is_separator(v72) then
 
                         local v126 = {
                             "yaw_base", "yaw_mode", "yaw_offset", "yaw_left", "yaw_right", "yaw_spin_speed",
-                            "modifier", "modifier_offset", "modifier_spin_speed", "body"
+                            "modifier", "modifier_offset", "modifier_spin_speed",
+                            "multi_modifier", "multi_modifier_mode", "multi_modifier_offset", "multi_modifier_speed", "body"
                         };
                         local v127 = {
                             yaw_options_ex = {
@@ -2440,7 +3507,7 @@ if not v72 or v70:is_separator(v72) then
                             "defensive_pitch_right", "defensive_pitch_random", "defensive_pitch_spin_speed",
                             "defensive_yaw", "defensive_yaw_angle", "defensive_yaw_left", "defensive_yaw_right",
                             "defensive_yaw_random", "defensive_yaw_spin_speed", "defensive_yaw_ways",
-                            "defensive_clear_mod", "defensive_allow_hs",
+                            "defensive_activation_mode", "defensive_clear_mod", "defensive_allow_hs",
                             "defensive_flick", "flick_mode", "flick_pitch", "flick_yaw", "flick_yaw_random",
                             "flick_speed", "flick_speed_random", "flick_limit", "flick_invert_key",
                             "flick_break_anims", "flick_force_defensive"
@@ -2549,6 +3616,10 @@ if not v72 or v70:is_separator(v72) then
                             cur.modifier:reset();
                             cur.modifier_offset:reset();
                             if cur.modifier_spin_speed then cur.modifier_spin_speed:reset(); end
+                            if cur.multi_modifier then cur.multi_modifier:reset(); end
+                            if cur.multi_modifier_mode then cur.multi_modifier_mode:reset(); end
+                            if cur.multi_modifier_offset then cur.multi_modifier_offset:reset(); end
+                            if cur.multi_modifier_speed then cur.multi_modifier_speed:reset(); end
                             cur.body:reset();
                             cur.yaw_options_ex.offset_left:reset();
                             cur.yaw_options_ex.offset_right:reset();
@@ -2584,6 +3655,7 @@ if not v72 or v70:is_separator(v72) then
                             if cur.defensive_yaw then cur.defensive_yaw:reset(); end
                             if cur.defensive_yaw_angle then cur.defensive_yaw_angle:reset(); end
                             if cur.defensive_yaw_ways then cur.defensive_yaw_ways:reset(); end
+                            if cur.defensive_activation_mode then cur.defensive_activation_mode:reset(); end
                             if cur.defensive_allow_hs then cur.defensive_allow_hs:reset(); end
                             if cur.defensive_flick then cur.defensive_flick:reset(); end
                             if cur.flick_mode then cur.flick_mode:reset(); end
@@ -2864,19 +3936,22 @@ if not v72 or v70:is_separator(v72) then
                         });
                         v100.data[l_v103_0][l_v106_0].defensive_aa:tooltip("Custom anti-aim angles applied during defensive exploit / break LC ticks for this state.");
                         local def_gear = v100.data[l_v103_0][l_v106_0].defensive_aa:create();
-                        v100.data[l_v103_0][l_v106_0].defensive_pitch = def_gear:combo("\v\226\128\162  \rPitch" .. uid_def, "Disabled", "Down", "Up", "Fake Up", "Zero", "Left / Right", "Random", "Jitter", "Spin", "Custom");
+                        v100.data[l_v103_0][l_v106_0].defensive_pitch = def_gear:combo("\v\226\128\162  \rPitch" .. uid_def, "Disabled", "Down", "Up", "Fake Up", "Zero", "Left / Right", "Random", "Jitter", "Spin", "Custom", "Elysian", "Semi-Up", "Semi-Down", "Dynamic", "Oscillate", "Auto");
                         v100.data[l_v103_0][l_v106_0].defensive_pitch_angle = def_gear:slider("    \v\226\164\183  \rPitch Angle##def" .. uid_def, -89, 89, -89, nil, "\194\176");
                         v100.data[l_v103_0][l_v106_0].defensive_pitch_left = def_gear:slider("    \v\226\164\183  \rPitch Left##def" .. uid_def, -89, 89, -89, nil, "\194\176");
                         v100.data[l_v103_0][l_v106_0].defensive_pitch_right = def_gear:slider("    \v\226\164\183  \rPitch Right##def" .. uid_def, -89, 89, 89, nil, "\194\176");
                         v100.data[l_v103_0][l_v106_0].defensive_pitch_random = def_gear:slider("    \v\226\164\183  \rPitch Randomize##def" .. uid_def, 0, 89, 0, nil, "\194\176");
                         v100.data[l_v103_0][l_v106_0].defensive_pitch_spin_speed = def_gear:slider("    \v\226\164\183  \rPitch Spin Speed##def" .. uid_def, 1, 50, 10, nil, "t");
-                        v100.data[l_v103_0][l_v106_0].defensive_yaw = def_gear:combo("\v\226\128\162  \rYaw" .. uid_def, "Disabled", "Static", "Left / Right", "Jitter", "Switch", "Random", "Spin", "Spin Jitter", "180v", "Opposite", "Ways");
+                        v100.data[l_v103_0][l_v106_0].defensive_yaw = def_gear:combo("\v\226\128\162  \rYaw" .. uid_def, "Disabled", "Static", "Left / Right", "Jitter", "Switch", "Random", "Spin", "Spin Jitter", "180v", "Opposite", "Ways", "Dynamic", "Sweep", "Sideways");
                         v100.data[l_v103_0][l_v106_0].defensive_yaw_angle = def_gear:slider("    \v\226\164\183  \rYaw Angle##def" .. uid_def, -180, 180, 180, nil, "\194\176");
                         v100.data[l_v103_0][l_v106_0].defensive_yaw_left = def_gear:slider("    \v\226\164\183  \rYaw Left##def" .. uid_def, -180, 180, -90, nil, "\194\176");
                         v100.data[l_v103_0][l_v106_0].defensive_yaw_right = def_gear:slider("    \v\226\164\183  \rYaw Right##def" .. uid_def, -180, 180, 90, nil, "\194\176");
                         v100.data[l_v103_0][l_v106_0].defensive_yaw_random = def_gear:slider("    \v\226\164\183  \rYaw Randomize##def" .. uid_def, 0, 180, 0, nil, "\194\176");
                         v100.data[l_v103_0][l_v106_0].defensive_yaw_spin_speed = def_gear:slider("    \v\226\164\183  \rYaw Spin Speed##def" .. uid_def, 1, 100, 36, nil, "\194\176/t");
                         v100.data[l_v103_0][l_v106_0].defensive_yaw_ways = def_gear:slider("    \v\226\164\183  \rWays##def" .. uid_def, 2, 8, 4);
+                        v100.data[l_v103_0][l_v106_0].defensive_activation_mode = def_gear:combo("\v\226\128\162  \rActivation" .. uid_def, "Always", "Hittable Only");
+                        v100.data[l_v103_0][l_v106_0].defensive_activation_mode:tooltip("Defensive AA activation condition: Always or Hittable Only (activates only when player is targeted/vulnerable to an enemy).");
+                        v100.data[l_v103_0][l_v106_0].defensive_activation = v100.data[l_v103_0][l_v106_0].defensive_activation_mode;
                         v100.data[l_v103_0][l_v106_0].defensive_clear_mod = def_gear:switch("\v\226\128\162  \rClear Modifier on Snap" .. uid_def, true);
                         v100.data[l_v103_0][l_v106_0].defensive_allow_hs = def_gear:switch("\v\226\128\162  \rAllow with Hide Shots" .. uid_def, true);
                         v100.data[l_v103_0][l_v106_0].defensive_pitch_angle:depend({ [1] = v100.data[l_v103_0][l_v106_0].defensive_pitch, [2] = "Custom" });
@@ -2968,6 +4043,28 @@ if not v72 or v70:is_separator(v72) then
                             [2] = "Spin", 
                             [1] = v100.data[l_v103_0][l_v106_0].modifier
                         });
+                        v100.data[l_v103_0][l_v106_0].multi_modifier:tooltip("Overlays an additional modifier layer on top of the primary jitter/modifier.");
+                        v100.data[l_v103_0][l_v106_0].multi_modifier_mode:depend({
+                            [1] = l_states_0, 
+                            [2] = l_v103_0
+                        }, {
+                            [1] = l_teams_0, 
+                            [2] = l_v106_0
+                        }, v100.data[l_v103_0][l_v106_0].multi_modifier);
+                        v100.data[l_v103_0][l_v106_0].multi_modifier_offset:depend({
+                            [1] = l_states_0, 
+                            [2] = l_v103_0
+                        }, {
+                            [1] = l_teams_0, 
+                            [2] = l_v106_0
+                        }, v100.data[l_v103_0][l_v106_0].multi_modifier);
+                        v100.data[l_v103_0][l_v106_0].multi_modifier_speed:depend({
+                            [1] = l_states_0, 
+                            [2] = l_v103_0
+                        }, {
+                            [1] = l_teams_0, 
+                            [2] = l_v106_0
+                        }, v100.data[l_v103_0][l_v106_0].multi_modifier);
                         v100.data[l_v103_0][l_v106_0].yaw_options_ex.offset_left:depend({
                             [1] = l_states_0, 
                             [2] = l_v103_0
@@ -9316,54 +10413,83 @@ if not v72 or v70:is_separator(v72) then
         end
     end
 }):struct("safe_head")({
-    check = function(v238)
+    is_active = false,
+    check = function(v238, cmd)
         local opt = v238.antiaim and v238.antiaim.elements and v238.antiaim.elements.options_table;
-        if not opt or not opt.safe_head then return end;
+        if not opt or not opt.safe_head then 
+            v238.is_active = false;
+            return false, 60; 
+        end;
         local sh_selected = opt.safe_head:get();
-        if not sh_selected or #sh_selected == 0 then return end;
+        if not sh_selected or #sh_selected == 0 then 
+            v238.is_active = false;
+            return false, 60; 
+        end;
 
-        local is_fs = is_window_active() and ((v238.antiaim.elements.freestanding and v238.antiaim.elements.freestanding:get()) or (v238.antiaim.elements.freestanding_hotkey and v238.antiaim.elements.freestanding_hotkey:get()));
-        if (v238.antiaim.elements.manual_yaw and v238.antiaim.elements.manual_yaw:get() ~= "Disabled") or is_fs then
-            return;
+        if v238.antiaim.elements.manual_yaw and v238.antiaim.elements.manual_yaw:get() ~= "Disabled" then
+            v238.is_active = false;
+            return false, 60;
         end;
 
         local me = entity.get_local_player();
-        if not me or not me:is_alive() then return end;
+        if not me or not me:is_alive() then 
+            v238.is_active = false;
+            return false, 60; 
+        end;
 
-        local threat = entity.get_threat(true);
-        if not threat or not threat:is_alive() then return end;
-
-        local me_origin = me:get_origin();
-        local threat_origin = threat:get_origin();
-        if not me_origin or not threat_origin then return end;
-
-        local gap = (opt.safe_head_gap and opt.safe_head_gap:get()) or 35;
-        local is_higher = (me_origin.z - gap) > threat_origin.z;
-
-        local lp_state = v238.localplayer:state();
-        local c1 = opt.safe_head:get(1) and is_higher and (lp_state == 1);
-        local c2 = opt.safe_head:get(2) and is_higher and (lp_state == 4 or lp_state == 5);
-        local c3 = false;
-
-        if opt.safe_head:get(3) and (lp_state == 6 or lp_state == 7) then
+        -- Проверка оружия: если выбран Knife/Taser, Safe Head сработает ТОЛЬКО с ножом/тазером (а не с глоком и т.д.)
+        local wpn_mode = (opt.safe_head_weapon and opt.safe_head_weapon:get()) or "Knife/Taser";
+        local wpn_match = true;
+        if wpn_mode ~= "All Weapons" then
             local my_wpn = me:get_player_weapon();
             if my_wpn then
                 local cname = tostring(my_wpn:get_classname() or "");
-                local wpn_mode = (opt.safe_head_weapon and opt.safe_head_weapon:get()) or "Knife/Taser";
+                local is_knife = (cname == "CKnife") or (cname:find("Knife") ~= nil) or (cname:find("Bayonet") ~= nil);
+                local is_taser = (cname == "CWeaponTaser") or (cname:find("Taser") ~= nil);
+                pcall(function()
+                    if my_wpn.is_knife and my_wpn:is_knife() then is_knife = true; end;
+                    if my_wpn.is_taser and my_wpn:is_taser() then is_taser = true; end;
+                end);
+
                 if wpn_mode == "Knife/Taser" then
-                    c3 = (cname == "CKnife" or cname == "CWeaponTaser");
+                    wpn_match = is_knife or is_taser;
                 elseif wpn_mode == "Knife Only" then
-                    c3 = (cname == "CKnife");
+                    wpn_match = is_knife;
                 elseif wpn_mode == "Taser Only" then
-                    c3 = (cname == "CWeaponTaser");
-                elseif wpn_mode == "All Weapons" then
-                    c3 = true;
+                    wpn_match = is_taser;
                 end;
+            else
+                wpn_match = false;
             end;
         end;
 
-        if c1 or c2 or c3 then
-            local d_limit = (opt.safe_head_limit and opt.safe_head_limit:get()) or 60;
+        if not wpn_match then
+            v238.is_active = false;
+            return false, 60;
+        end;
+
+        -- Получаем реальное физическое состояние игрока (на земле, присед, воздух)
+        local flags = me.m_fFlags or 0;
+        local is_on_ground = bit.band(flags, 1) == 1;
+        local is_ducking = bit.band(flags, 4) == 4;
+        local is_slow_walk = false;
+        pcall(function()
+            is_slow_walk = v238.references.antiaim.misc.slow_walk and v238.references.antiaim.misc.slow_walk:get() == true;
+        end);
+
+        local is_standing = is_on_ground and not is_ducking and not is_slow_walk;
+        local is_crouching_or_sneaking = is_on_ground and (is_ducking or is_slow_walk);
+        local is_air = not is_on_ground;
+
+        local c1 = opt.safe_head:get(1) and is_standing;
+        local c2 = opt.safe_head:get(2) and is_crouching_or_sneaking;
+        local c3 = opt.safe_head:get(3) and is_air;
+
+        local is_triggered = c1 or c2 or c3;
+        v238.is_active = is_triggered;
+        local d_limit = (opt.safe_head_limit and opt.safe_head_limit:get()) or 60;
+
+        if is_triggered then
             v238.references.antiaim.angles.extract_yaw.offset:override(30);
             v238.references.antiaim.angles.extract_modifier.mode:override("Disabled");
             v238.references.antiaim.angles.extract_modifier.offset:override(0);
@@ -9371,11 +10497,29 @@ if not v72 or v70:is_separator(v72) then
             v238.references.antiaim.angles.extract_desync.left_limit:override(d_limit);
             v238.references.antiaim.angles.extract_desync.right_limit:override(d_limit);
             rage.antiaim:inverter(false);
+
+            -- Полное отключение дефенсивов, чтобы не сбивали Safe Head
+            if cmd then
+                cmd.force_defensive = false;
+            end;
+            pcall(function()
+                rage.exploit:allow_defensive(false);
+                rage.antiaim:override_hidden_pitch(0);
+                rage.antiaim:override_hidden_yaw_offset(0);
+            end);
+            v238.references.antiaim.angles.pitch:override("Down");
+            v238.references.antiaim.angles.extract_yaw.snap:override(false);
+            if v238.extended_pitch_ref then
+                pcall(function() v238.extended_pitch_ref:override(); end);
+            end;
+            return true, d_limit;
         end;
+
+        return false, d_limit;
     end, 
     init = function(v242)
-        local function v243()
-            v242:check();
+        local function v243(cmd)
+            v242:check(cmd);
         end;
         local function v245(v244)
             -- upvalues: v243 (ref)
@@ -14256,6 +15400,26 @@ v722:struct("antiaim_data")({
                     v504.extended_pitch_ref:override();
                 end);
             end;
+            if v504._unm_fd_overridden then
+                local fd_ref = v504.references and v504.references.antiaim and v504.references.antiaim.misc and v504.references.antiaim.misc.fake_duck;
+                if not fd_ref and l_pui_0 then
+                    pcall(function() fd_ref = l_pui_0.find("Aimbot", "Anti Aim", "Misc", "Fake Duck"); end);
+                end;
+                if fd_ref and fd_ref.override then
+                    pcall(fd_ref.override, fd_ref);
+                end;
+                v504._unm_fd_overridden = false;
+            end;
+            if v504._unm_def_overridden then
+                local snap_ref = v504.references and v504.references.antiaim and v504.references.antiaim.angles and v504.references.antiaim.angles.extract_yaw and v504.references.antiaim.angles.extract_yaw.snap;
+                if not snap_ref and l_pui_0 then
+                    pcall(function() snap_ref = l_pui_0.find("Aimbot", "Anti Aim", "Angles", "yaw", "Hidden"); end);
+                end;
+                if snap_ref and snap_ref.override then
+                    pcall(snap_ref.override, snap_ref);
+                end;
+                v504._unm_def_overridden = false;
+            end;
             return;
         else
             local l_antiaim_0 = v504.references.antiaim;
@@ -14270,31 +15434,11 @@ v722:struct("antiaim_data")({
             l_extract_yaw_0.snap:override(false);
             local v511, v512 = v504.localplayer:state(cmd);
             local v513 = v504.localplayer:disabler_state(cmd);
-            local v514 = v504.antiaim.data[v511] and v504.antiaim.data[v511][v512];
+            local aa_data = (v504.antiaim and v504.antiaim.data) or (v100 and v100.data);
+            local v514 = aa_data and aa_data[v511] and aa_data[v511][v512];
             if not v514 then return end;
 
             l_extract_yaw_0.base:override(v514.yaw_base and v514.yaw_base:get() or "At Target");
-
-            if v504.antiaim and v504.antiaim.elements and v504.antiaim.elements.live_state then
-                local cur_st_name = aa_st_names[v511] or "Unknown";
-                local cur_tm_name = (v512 == 1) and "CT" or "T";
-                local cur_side = rage.antiaim:inverter() and "Right" or "Left";
-                local is_menu_open = ui.get_alpha and ui.get_alpha() > 0 or false;
-                local target_text;
-                if is_menu_open then
-                    local ui_tm_idx = v504.antiaim.elements.teams and v504.antiaim.elements.teams:get() or 1;
-                    local ui_st_idx = v504.antiaim.elements.states and v504.antiaim.elements.states:get() or 1;
-                    local ui_tm_name = (ui_tm_idx == 1) and "CT" or "T";
-                    local ui_st_name = aa_st_names[ui_st_idx] or "Standing";
-                    target_text = string.format("\v\226\151\143 \rActive: \a9ca7e1ff%s [%s] \a{Small Text}| Edit: \a9ca7e1ff%s [%s]", cur_st_name, cur_tm_name, ui_st_name, ui_tm_name);
-                else
-                    target_text = string.format("\v\226\151\143 \rActive: \a9ca7e1ff%s [%s] \a{Small Text}| Side: \a9ca7e1ff%s", cur_st_name, cur_tm_name, cur_side);
-                end;
-                if v504._last_live_state ~= target_text then
-                    v504._last_live_state = target_text;
-                    v504.antiaim.elements.live_state:set(target_text);
-                end;
-            end;
 
             local _ = v504.localplayer:side();
             local v516 = nil;
@@ -14400,26 +15544,86 @@ v722:struct("antiaim_data")({
                 v520 = v514["modifier_" .. math.random(v521)]:get();
             end;
 
-            if mod_name == "Spin" then
-                local mod_spin_spd = (v514.modifier_spin_speed and v514.modifier_spin_speed:get()) or 20;
-                local spin_offset = ((globals.tickcount * mod_spin_spd) % 360) - 180;
-                if v520 ~= 0 then
-                    spin_offset = math.floor(spin_offset * (math.abs(v520) / 180));
+            local is_multi_mod = v514.multi_modifier and v514.multi_modifier:get();
+            if is_multi_mod then
+                local function calc_sub_mod(m_name, m_off, m_spd, tick, is_second)
+                    if not m_name or m_name == "Disabled" then return 0 end;
+                    local spd = math.max(1, m_spd or (is_second and 2 or 1));
+                    local step = math.floor(tick / spd);
+
+                    if m_name == "Center" then
+                        return (step % 2 == 0) and m_off or -m_off;
+                    elseif m_name == "Offset" then
+                        return (step % 2 == 0) and m_off or 0;
+                    elseif m_name == "Random" then
+                        local abs_o = math.abs(m_off);
+                        if is_second then
+                            local seed = (step * 1103515245 + 12345) % 2147483648;
+                            return (seed % (abs_o * 2 + 1)) - abs_o;
+                        else
+                            return utils.random_int(-abs_o, abs_o);
+                        end;
+                    elseif m_name == "Spin" then
+                        local spin_spd = is_second and (spd * 6) or (m_spd or 20);
+                        local spin_o = ((tick * spin_spd) % 360) - 180;
+                        if m_off ~= 0 then
+                            spin_o = math.floor(spin_o * (math.abs(m_off) / 180));
+                        end;
+                        return spin_o;
+                    elseif m_name == "Sway" then
+                        local freq = is_second and (0.3 / spd) or (spd * 0.006 + 0.05);
+                        local sway_o = math.sin(tick * freq) * m_off;
+                        return math.floor(sway_o);
+                    elseif m_name == "3-Way" then
+                        local s = step % 3;
+                        return (s == 0) and -m_off or ((s == 1) and 0 or m_off);
+                    elseif m_name == "5-Way" then
+                        local s = step % 5;
+                        if s == 0 then return -m_off;
+                        elseif s == 1 then return -math.floor(m_off * 0.5);
+                        elseif s == 2 then return 0;
+                        elseif s == 3 then return math.floor(m_off * 0.5);
+                        else return m_off; end;
+                    elseif m_name == "Skitter" then
+                        local s = step % 3;
+                        return (s == 0) and m_off or ((s == 1) and -math.floor(m_off * 0.6) or math.floor(m_off * 0.3));
+                    end;
+                    return 0;
                 end;
+
+                local mod1_spd = (v514.modifier_spin_speed and v514.modifier_spin_speed:get()) or 20;
+                local delta1 = calc_sub_mod(mod_name, v520, mod1_spd, globals.tickcount, false);
+
+                local mmod_name = v514.multi_modifier_mode and v514.multi_modifier_mode:get() or "Center";
+                local mmod_off = v514.multi_modifier_offset and v514.multi_modifier_offset:get() or 30;
+                local mmod_spd = v514.multi_modifier_speed and v514.multi_modifier_speed:get() or 2;
+                local delta2 = calc_sub_mod(mmod_name, mmod_off, mmod_spd, globals.tickcount, true);
+
+                local total_mod_offset = delta1 + delta2;
                 l_extract_mod_0.mode:override("Disabled");
-                v516 = v516 + spin_offset;
-            elseif mod_name == "Skitter" then
-                l_extract_mod_0.mode:override("Disabled");
-                local step = globals.tickcount % 3;
-                local skitter_val = (step == 0) and v520 or ((step == 1) and -math.floor(v520 * 0.6) or math.floor(v520 * 0.3));
-                v516 = v516 + skitter_val;
-            elseif mod_name == "Sway" then
-                l_extract_mod_0.mode:override("Disabled");
-                local mod_sway = math.sin(globals.tickcount * 0.12) * v520;
-                v516 = v516 + math.floor(mod_sway);
+                v516 = v516 + total_mod_offset;
             else
-                l_extract_mod_0.mode:override(mod_name);
-                l_extract_mod_0.offset:override(v520);
+                if mod_name == "Spin" then
+                    local mod_spin_spd = (v514.modifier_spin_speed and v514.modifier_spin_speed:get()) or 20;
+                    local spin_offset = ((globals.tickcount * mod_spin_spd) % 360) - 180;
+                    if v520 ~= 0 then
+                        spin_offset = math.floor(spin_offset * (math.abs(v520) / 180));
+                    end;
+                    l_extract_mod_0.mode:override("Disabled");
+                    v516 = v516 + spin_offset;
+                elseif mod_name == "Skitter" then
+                    l_extract_mod_0.mode:override("Disabled");
+                    local step = globals.tickcount % 3;
+                    local skitter_val = (step == 0) and v520 or ((step == 1) and -math.floor(v520 * 0.6) or math.floor(v520 * 0.3));
+                    v516 = v516 + skitter_val;
+                elseif mod_name == "Sway" then
+                    l_extract_mod_0.mode:override("Disabled");
+                    local mod_sway = math.sin(globals.tickcount * 0.12) * v520;
+                    v516 = v516 + math.floor(mod_sway);
+                else
+                    l_extract_mod_0.mode:override(mod_name);
+                    l_extract_mod_0.offset:override(v520);
+                end;
             end;
 
             local v522 = v514.body:get();
@@ -14586,10 +15790,84 @@ v722:struct("antiaim_data")({
                 end;
             end;
 
-            -- Custom Defensive AA override (per state)
+            -- Custom Defensive AA override (per state with fallback for Freestanding and Manuals)
             local cur_def_data = v514;
+            if (v511 == 8 or v511 == 9) and (not cur_def_data or not cur_def_data.defensive_aa or not cur_def_data.defensive_aa:get()) then
+                local fallback_data = aa_data and aa_data[v513] and aa_data[v513][v512];
+                if fallback_data and fallback_data.defensive_aa and fallback_data.defensive_aa:get() then
+                    cur_def_data = fallback_data;
+                end;
+            end;
             local snap_elem = v504.antiaim.elements;
             local is_def_enabled = cur_def_data and cur_def_data.defensive_aa and cur_def_data.defensive_aa:get();
+
+            -- Safe Head check & priority override over Defensive AA
+            local is_sh_active, sh_limit = false, 60;
+            if v504.safe_head and v504.safe_head.check then
+                is_sh_active, sh_limit = v504.safe_head:check(cmd);
+            end;
+            if is_sh_active then
+                is_def_enabled = false;
+                if cmd then cmd.force_defensive = false; end;
+                pcall(function()
+                    rage.exploit:allow_defensive(false);
+                    rage.antiaim:override_hidden_pitch(0);
+                    rage.antiaim:override_hidden_yaw_offset(0);
+                end);
+                l_angles_0.pitch:override("Down");
+                l_extract_yaw_0.snap:override(false);
+                v516 = 30;
+                l_extract_mod_0.mode:override("Disabled");
+                l_extract_mod_0.offset:override(0);
+                l_extract_desync_1.switch:override(true);
+                l_extract_desync_1.left_limit:override(sh_limit or 60);
+                l_extract_desync_1.right_limit:override(sh_limit or 60);
+                rage.antiaim:inverter(false);
+            end;
+
+            -- Unmatched Features: Disable Defensive & Fake Duck on Warmup
+            local unm_opt = v504.antiaim and v504.antiaim.elements and v504.antiaim.elements.unmatched_table;
+            local is_unm_def_disabled = unm_opt and unm_opt.disable_defensive and unm_opt.disable_defensive:get();
+            if is_unm_def_disabled then
+                is_def_enabled = false;
+                pcall(function()
+                    rage.exploit:allow_defensive(false);
+                    rage.antiaim:override_hidden_pitch(0);
+                    rage.antiaim:override_hidden_yaw_offset(0);
+                end);
+                l_extract_yaw_0.snap:override(false);
+                v504._unm_def_overridden = true;
+            elseif v504._unm_def_overridden then
+                l_extract_yaw_0.snap:override();
+                v504._unm_def_overridden = false;
+            end;
+
+            if unm_opt and unm_opt.warmup_fake_duck and unm_opt.warmup_fake_duck:get() then
+                local gr = entity.get_game_rules and entity.get_game_rules();
+                local is_warmup = gr and (gr.m_bWarmupPeriod == true or gr.m_bWarmupPeriod == 1);
+                local fd_ref = v504.references and v504.references.antiaim and v504.references.antiaim.misc and v504.references.antiaim.misc.fake_duck;
+                if not fd_ref and l_pui_0 then
+                    pcall(function() fd_ref = l_pui_0.find("Aimbot", "Anti Aim", "Misc", "Fake Duck"); end);
+                end;
+                if fd_ref and fd_ref.override then
+                    if is_warmup then
+                        fd_ref:override(true);
+                        v504._unm_fd_overridden = true;
+                    elseif v504._unm_fd_overridden then
+                        fd_ref:override();
+                        v504._unm_fd_overridden = false;
+                    end;
+                end;
+            elseif v504._unm_fd_overridden then
+                local fd_ref = v504.references and v504.references.antiaim and v504.references.antiaim.misc and v504.references.antiaim.misc.fake_duck;
+                if not fd_ref and l_pui_0 then
+                    pcall(function() fd_ref = l_pui_0.find("Aimbot", "Anti Aim", "Misc", "Fake Duck"); end);
+                end;
+                if fd_ref and fd_ref.override then
+                    pcall(fd_ref.override, fd_ref);
+                end;
+                v504._unm_fd_overridden = false;
+            end;
 
             if is_def_enabled and snap_elem and snap_elem.disable_lc_grenade and snap_elem.disable_lc_grenade:get() then
                 local active_wpn = v505:get_player_weapon();
@@ -14660,6 +15938,33 @@ v722:struct("antiaim_data")({
 
             local is_def_tick = false;
             if is_def_enabled then
+                -- Check Hittable Only activation mode (Elysian preset data / Custom Defensive AA)
+                local act_elem = cur_def_data and (cur_def_data.defensive_activation_mode or cur_def_data.defensive_activation);
+                local act_mode = act_elem and act_elem:get();
+                local is_hittable_mode = (act_mode == 2) or (act_mode == "2") or (type(act_mode) == "string" and act_mode:lower():find("hittable") ~= nil);
+                if is_hittable_mode then
+                    local is_hittable = false;
+                    pcall(function()
+                        local th = entity.get_threat and entity.get_threat(true);
+                        if th and th:is_alive() and not th:is_dormant() then
+                            is_hittable = true;
+                        end;
+                    end);
+                    if not is_hittable then
+                        is_def_enabled = false;
+                    end;
+                end;
+            end;
+
+            if not is_def_enabled then
+                pcall(function()
+                    rage.exploit:allow_defensive(false);
+                    rage.antiaim:override_hidden_pitch(0);
+                    rage.antiaim:override_hidden_yaw_offset(0);
+                end);
+                l_extract_yaw_0.snap:override(false);
+                if cmd then cmd.force_defensive = false; end;
+            else
                 pcall(function()
                     rage.exploit:allow_defensive(true);
                 end);
@@ -14671,10 +15976,39 @@ v722:struct("antiaim_data")({
                         is_def_tick = true;
                     end;
                 end);
+                pcall(function()
+                    if rage.exploit.get_defensive and rage.exploit:get_defensive() then
+                        is_def_tick = true;
+                    end;
+                end);
+
+                -- Elysian-style Tickbase Shift Tracker
+                local srv_tick = globals.server_tick;
+                if srv_tick and cur_tb then
+                    v504.ely_prev_tb = v504.ely_prev_tb or cur_tb;
+                    local ely_tb_diff = cur_tb - v504.ely_prev_tb;
+                    v504.ely_prev_tb = math.max(cur_tb, v504.ely_prev_tb);
+
+                    if ely_tb_diff > 1 then
+                        v504.ely_pending_tick = srv_tick + 1;
+                        v504.ely_active_until = 0;
+                    elseif ely_tb_diff < 0 then
+                        v504.ely_active_until = srv_tick - ely_tb_diff - 4;
+                    elseif v504.ely_pending_tick == srv_tick then
+                        v504.ely_active_until = srv_tick + 1;
+                    end;
+
+                    if v504.ely_active_until and srv_tick <= v504.ely_active_until then
+                        is_def_tick = true;
+                    end;
+                end;
             end;
 
             -- Havoc-style Defensive Flick Timer & Exploit Trigger
-            local is_flick_enabled = cur_def_data and cur_def_data.defensive_flick and cur_def_data.defensive_flick:get();
+            local is_flick_enabled = is_def_enabled and cur_def_data and cur_def_data.defensive_flick and cur_def_data.defensive_flick:get();
+            if is_unm_def_disabled or is_sh_active then
+                is_flick_enabled = false;
+            end;
             if is_flick_enabled and snap_elem and snap_elem.disable_lc_grenade and snap_elem.disable_lc_grenade:get() then
                 local active_wpn = v505:get_player_weapon();
                 if active_wpn then
@@ -14716,7 +16050,7 @@ v722:struct("antiaim_data")({
                     v504.def_flick_now = false;
                 end;
 
-                if v504.def_flick_now then
+                if v504.def_flick_now and not is_unm_def_disabled then
                     if cur_def_data.flick_force_defensive and cur_def_data.flick_force_defensive:get() then
                         cmd.force_defensive = true;
                         pcall(function() rage.exploit:allow_defensive(true); end);
@@ -14764,11 +16098,20 @@ v722:struct("antiaim_data")({
                     l_angles_0.pitch:override(f_pitch == 0 and "Zero" or "Down");
                 end;
                 l_extract_yaw_0.snap:override(true);
+                if v504.freestanding_ref then
+                    v504.freestanding_ref:override(false);
+                end;
+                if v504.freestanding_fs_ref then
+                    v504.freestanding_fs_ref:override(false);
+                end;
+                if has_manual then
+                    l_extract_yaw_0.base:override(cur_def_data.yaw_base and cur_def_data.yaw_base:get() or "At Target");
+                end;
                 pcall(function()
                     rage.antiaim:override_hidden_pitch(f_pitch);
                     rage.antiaim:override_hidden_yaw_offset(-flick_yaw_offset);
                 end);
-            elseif is_def_enabled and cur_def_data then
+            elseif is_def_enabled and cur_def_data and not is_sh_active then
                 local def_pitch_mode = cur_def_data.defensive_pitch and cur_def_data.defensive_pitch:get() or "Disabled";
                 local def_pitch_val = nil;
 
@@ -14777,7 +16120,6 @@ v722:struct("antiaim_data")({
                 elseif def_pitch_mode == "Up" then
                     def_pitch_val = -89;
                 elseif def_pitch_mode == "Fake Up" or def_pitch_mode == "Fake Pitch Up" then
-                    -- Fake Up: на обычных тиках смотрит вниз (89), а на дефенсив-тиках фликает вверх (-89)
                     def_pitch_val = is_def_tick and -89 or 89;
                 elseif def_pitch_mode == "Zero" then
                     def_pitch_val = 0;
@@ -14797,6 +16139,18 @@ v722:struct("antiaim_data")({
                     def_pitch_val = math.floor(math.sin(globals.tickcount * (p_spin_spd * 0.05)) * 89);
                 elseif def_pitch_mode == "Custom" then
                     def_pitch_val = cur_def_data.defensive_pitch_angle and cur_def_data.defensive_pitch_angle:get() or -89;
+                elseif def_pitch_mode == "Elysian" then
+                    def_pitch_val = math.floor(-89 + (math.abs((globals.realtime % 0.3) - 0.15) / 0.15) * 178);
+                elseif def_pitch_mode == "Semi-Up" then
+                    def_pitch_val = is_def_tick and -52 or 52;
+                elseif def_pitch_mode == "Semi-Down" then
+                    def_pitch_val = is_def_tick and 52 or -52;
+                elseif def_pitch_mode == "Dynamic" then
+                    def_pitch_val = math.floor(math.sin(globals.tickcount * 0.15) * 89);
+                elseif def_pitch_mode == "Oscillate" then
+                    def_pitch_val = (globals.tickcount % 12 < 6) and -89 or 89;
+                elseif def_pitch_mode == "Auto" then
+                    def_pitch_val = is_def_tick and -89 or 89;
                 end;
 
                 if def_pitch_val ~= nil and def_pitch_mode ~= "Disabled" then
@@ -14806,14 +16160,12 @@ v722:struct("antiaim_data")({
                     end;
 
                     if def_pitch_mode == "Up" then
-                        -- Режим Up: всегда смотрит строго вверх (-89) на каждом тике без падения вниз
                         l_angles_0.pitch:override("Up");
                         l_extract_yaw_0.snap:override(true);
                         pcall(function()
                             rage.antiaim:override_hidden_pitch(-89);
                         end);
                     elseif def_pitch_mode == "Fake Up" or def_pitch_mode == "Fake Pitch Up" then
-                        -- Режим Fake Up: смотрит вниз на обычных тиках и подкидывает вверх только на дефенсив-тиках
                         if is_def_tick then
                             l_angles_0.pitch:override("Up");
                             l_extract_yaw_0.snap:override(true);
@@ -14834,7 +16186,67 @@ v722:struct("antiaim_data")({
                     end;
                 end;
 
+                local def_yaw_mode = cur_def_data.defensive_yaw and cur_def_data.defensive_yaw:get() or "Disabled";
+                local def_yaw_val = nil;
+                if def_yaw_mode ~= "Disabled" then
+                    l_extract_yaw_0.snap:override(true);
+                    local def_yaw_angle = cur_def_data.defensive_yaw_angle and cur_def_data.defensive_yaw_angle:get() or 180;
+                    local def_yaw_left = cur_def_data.defensive_yaw_left and cur_def_data.defensive_yaw_left:get() or -90;
+                    local def_yaw_right = cur_def_data.defensive_yaw_right and cur_def_data.defensive_yaw_right:get() or 90;
+                    local def_yaw_ways = cur_def_data.defensive_yaw_ways and cur_def_data.defensive_yaw_ways:get() or 4;
+
+                    if def_yaw_mode == "Static" then
+                        def_yaw_val = def_yaw_angle;
+                    elseif def_yaw_mode == "Left / Right" or def_yaw_mode == "Left/Right" then
+                        local is_right = rage.antiaim:inverter();
+                        def_yaw_val = is_right and def_yaw_right or def_yaw_left;
+                    elseif def_yaw_mode == "Jitter" then
+                        def_yaw_val = (globals.tickcount % 2 == 0) and def_yaw_right or def_yaw_left;
+                    elseif def_yaw_mode == "Switch" then
+                        def_yaw_val = (globals.tickcount % 4 < 2) and def_yaw_right or def_yaw_left;
+                    elseif def_yaw_mode == "Random" then
+                        def_yaw_val = utils.random_int(-180, 180);
+                    elseif def_yaw_mode == "Spin" then
+                        local y_spin_spd = cur_def_data.defensive_yaw_spin_speed and cur_def_data.defensive_yaw_spin_speed:get() or 36;
+                        def_yaw_val = ((globals.tickcount * y_spin_spd) % 360) - 180;
+                    elseif def_yaw_mode == "Spin Jitter" then
+                        local y_spin_spd = cur_def_data.defensive_yaw_spin_speed and cur_def_data.defensive_yaw_spin_speed:get() or 36;
+                        local base_spin = ((globals.tickcount * y_spin_spd) % 360) - 180;
+                        def_yaw_val = base_spin + ((globals.tickcount % 2 == 0) and def_yaw_angle or -def_yaw_angle);
+                    elseif def_yaw_mode == "180v" then
+                        def_yaw_val = (globals.tickcount % 2 == 0) and 180 or 0;
+                    elseif def_yaw_mode == "Opposite" then
+                        def_yaw_val = rage.antiaim:inverter() and -def_yaw_angle or def_yaw_angle;
+                    elseif def_yaw_mode == "Ways" then
+                        local ways_cnt = math.max(2, def_yaw_ways);
+                        local step = math.floor((globals.tickcount / 2) % ways_cnt);
+                        def_yaw_val = -180 + math.floor(step * (360 / ways_cnt));
+                    elseif def_yaw_mode == "Dynamic" then
+                        def_yaw_val = math.floor(math.sin(globals.tickcount * 0.1) * 180);
+                    elseif def_yaw_mode == "Sweep" then
+                        local sweep_step = (globals.tickcount % 24) / 24;
+                        def_yaw_val = math.floor(-180 + sweep_step * 360);
+                    elseif def_yaw_mode == "Sideways" then
+                        def_yaw_val = rage.antiaim:inverter() and -90 or 90;
+                    end;
+
+                    local y_rnd = cur_def_data.defensive_yaw_random and cur_def_data.defensive_yaw_random:get() or 0;
+                    if y_rnd > 0 then
+                        def_yaw_val = def_yaw_val + utils.random_int(-y_rnd, y_rnd);
+                    end;
+
+                    pcall(function()
+                        rage.antiaim:override_hidden_yaw_offset(-def_yaw_val);
+                    end);
+                end;
+
                 if is_def_tick then
+                    if v504.freestanding_ref then
+                        v504.freestanding_ref:override(false);
+                    end;
+                    if v504.freestanding_fs_ref then
+                        v504.freestanding_fs_ref:override(false);
+                    end;
                     if cur_def_data.defensive_clear_mod and cur_def_data.defensive_clear_mod:get() then
                         l_extract_mod_0.mode:override("Disabled");
                     end;
@@ -14847,52 +16259,12 @@ v722:struct("antiaim_data")({
                             l_angles_0.pitch:override("Down");
                         end;
                     end;
-
-                    local def_yaw_mode = cur_def_data.defensive_yaw and cur_def_data.defensive_yaw:get() or "Disabled";
-                    if def_yaw_mode ~= "Disabled" then
-                        l_extract_yaw_0.snap:override(true);
+                    if def_yaw_val ~= nil then
+                        v516 = def_yaw_val;
+                        if has_manual then
+                            l_extract_yaw_0.base:override(cur_def_data.yaw_base and cur_def_data.yaw_base:get() or "At Target");
+                        end;
                     end;
-                    local def_yaw_angle = cur_def_data.defensive_yaw_angle and cur_def_data.defensive_yaw_angle:get() or 180;
-                    local def_yaw_left = cur_def_data.defensive_yaw_left and cur_def_data.defensive_yaw_left:get() or -90;
-                    local def_yaw_right = cur_def_data.defensive_yaw_right and cur_def_data.defensive_yaw_right:get() or 90;
-                    local def_yaw_ways = cur_def_data.defensive_yaw_ways and cur_def_data.defensive_yaw_ways:get() or 4;
-
-                    if def_yaw_mode == "Static" then
-                        v516 = def_yaw_angle;
-                    elseif def_yaw_mode == "Left / Right" or def_yaw_mode == "Left/Right" then
-                        local is_right = rage.antiaim:inverter();
-                        v516 = is_right and def_yaw_right or def_yaw_left;
-                    elseif def_yaw_mode == "Jitter" then
-                        v516 = (globals.tickcount % 2 == 0) and def_yaw_right or def_yaw_left;
-                    elseif def_yaw_mode == "Switch" then
-                        v516 = (globals.tickcount % 4 < 2) and def_yaw_right or def_yaw_left;
-                    elseif def_yaw_mode == "Random" then
-                        v516 = utils.random_int(-180, 180);
-                    elseif def_yaw_mode == "Spin" then
-                        local y_spin_spd = cur_def_data.defensive_yaw_spin_speed and cur_def_data.defensive_yaw_spin_speed:get() or 36;
-                        v516 = ((globals.tickcount * y_spin_spd) % 360) - 180;
-                    elseif def_yaw_mode == "Spin Jitter" then
-                        local y_spin_spd = cur_def_data.defensive_yaw_spin_speed and cur_def_data.defensive_yaw_spin_speed:get() or 36;
-                        local base_spin = ((globals.tickcount * y_spin_spd) % 360) - 180;
-                        v516 = base_spin + ((globals.tickcount % 2 == 0) and def_yaw_angle or -def_yaw_angle);
-                    elseif def_yaw_mode == "180v" then
-                        v516 = (globals.tickcount % 2 == 0) and 180 or 0;
-                    elseif def_yaw_mode == "Opposite" then
-                        v516 = rage.antiaim:inverter() and -def_yaw_angle or def_yaw_angle;
-                    elseif def_yaw_mode == "Ways" then
-                        local ways_cnt = math.max(2, def_yaw_ways);
-                        local step = math.floor((globals.tickcount / 2) % ways_cnt);
-                        v516 = -180 + math.floor(step * (360 / ways_cnt));
-                    end;
-
-                    local y_rnd = cur_def_data.defensive_yaw_random and cur_def_data.defensive_yaw_random:get() or 0;
-                    if y_rnd > 0 then
-                        v516 = v516 + utils.random_int(-y_rnd, y_rnd);
-                    end;
-
-                    pcall(function()
-                        rage.antiaim:override_hidden_yaw_offset(-v516);
-                    end);
                 end;
             else
                 l_angles_0.pitch:override("Down");
@@ -14929,6 +16301,17 @@ v722:struct("antiaim_data")({
                 end;
             end;
 
+            if is_sh_active then
+                v516 = 30;
+                l_angles_0.pitch:override("Down");
+                l_extract_mod_0.mode:override("Disabled");
+                l_extract_mod_0.offset:override(0);
+                l_extract_desync_1.switch:override(true);
+                l_extract_desync_1.left_limit:override(sh_limit or 60);
+                l_extract_desync_1.right_limit:override(sh_limit or 60);
+                rage.antiaim:inverter(false);
+            end;
+
             v504.references.antiaim.angles.extract_yaw.offset:override(v516);
             return;
         end;
@@ -14940,22 +16323,6 @@ v722:struct("antiaim_data")({
         end;
         events.createmove(v540);
 
-        events.render(function()
-            if not v539.antiaim or not v539.antiaim.elements or not v539.antiaim.elements.live_state then return end;
-            local me = entity.get_local_player();
-            if not me or not me:is_alive() then
-                local cur_side = rage.antiaim:inverter() and "Right" or "Left";
-                local ui_tm_idx = v539.antiaim.elements.teams and v539.antiaim.elements.teams:get() or 1;
-                local ui_st_idx = v539.antiaim.elements.states and v539.antiaim.elements.states:get() or 1;
-                local cur_tm_name = (ui_tm_idx == 1) and "CT" or "T";
-                local cur_st_name = aa_st_names[ui_st_idx] or "Standing";
-                local target_text = string.format("\v\226\151\143 \rSelected: \a9ca7e1ff%s [%s] \a{Small Text}| Side: \a9ca7e1ff%s", cur_st_name, cur_tm_name, cur_side);
-                if v539._last_live_state ~= target_text then
-                    v539._last_live_state = target_text;
-                    v539.antiaim.elements.live_state:set(target_text);
-                end;
-            end;
-        end);
 
         events.bullet_impact(function(event)
             pcall(function()
@@ -15037,6 +16404,25 @@ v722:struct("antiaim_data")({
                 if v539.antiaim and v539.antiaim.elements and v539.antiaim.elements.freestanding then
                     v539.antiaim.elements.freestanding:set(false);
                 end;
+            end);
+        end);
+
+        events.shutdown(function()
+            pcall(function()
+                if v539.freestanding_ref then v539.freestanding_ref:override(); end;
+                if v539.freestanding_fs_ref then v539.freestanding_fs_ref:override(); end;
+                if v539.extended_pitch_ref then v539.extended_pitch_ref:override(); end;
+                local fd_ref = v539.references and v539.references.antiaim and v539.references.antiaim.misc and v539.references.antiaim.misc.fake_duck;
+                if not fd_ref and l_pui_0 then pcall(function() fd_ref = l_pui_0.find("Aimbot", "Anti Aim", "Misc", "Fake Duck"); end); end;
+                if fd_ref and fd_ref.override then fd_ref:override(); end;
+                local snap_ref = v539.references and v539.references.antiaim and v539.references.antiaim.angles and v539.references.antiaim.angles.extract_yaw and v539.references.antiaim.angles.extract_yaw.snap;
+                if not snap_ref and l_pui_0 then pcall(function() snap_ref = l_pui_0.find("Aimbot", "Anti Aim", "Angles", "yaw", "Hidden"); end); end;
+                if snap_ref and snap_ref.override then snap_ref:override(); end;
+                pcall(function()
+                    rage.exploit:allow_defensive(true);
+                    rage.antiaim:override_hidden_pitch(0);
+                    rage.antiaim:override_hidden_yaw_offset(0);
+                end);
             end);
         end);
     end
