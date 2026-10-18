@@ -16,7 +16,7 @@ local v722 -- forward declaration
 -- Пользователи и друзья со старой версией увидят новый номер
 -- и Neverlose автоматически скачает им обновление с вашего GitHub!
 -- ============================================================
-local SCRIPT_BUILD = 3
+local SCRIPT_BUILD = 4
 
 -- ============================================================
 -- USER PRIVILEGE CHECK: ADMIN vs NIGHTLY (Steam ID & Username)
@@ -102,10 +102,12 @@ pcall(function()
 
     local cache_rnd = tostring(os and os.time and os.time() or math.random(10000, 99999))
     local CLOUD_URLS = {
+        -- jsDelivr CDN: быстро, без блокировок (без cache-buster — NL кэш не нужен)
+        "https://cdn.jsdelivr.net/gh/jesusanet/caelestisnl@main/caelestisnl_22.lua",
+        "https://fastly.jsdelivr.net/gh/jesusanet/caelestisnl@main/caelestisnl_22.lua",
+        -- GitHub Raw: может быть заблокирован у некоторых провайдеров
         "https://raw.githubusercontent.com/jesusanet/caelestisnl/main/caelestisnl_22.lua?_t=" .. cache_rnd,
         "https://ghproxy.net/https://raw.githubusercontent.com/jesusanet/caelestisnl/main/caelestisnl_22.lua?_t=" .. cache_rnd,
-        "https://gh-proxy.com/https://raw.githubusercontent.com/jesusanet/caelestisnl/main/caelestisnl_22.lua?_t=" .. cache_rnd,
-        "https://cdn.jsdelivr.net/gh/jesusanet/caelestisnl@main/caelestisnl_22.lua?_t=" .. cache_rnd
     }
 
     local cloud_data = nil
@@ -14475,7 +14477,15 @@ v722:struct("antiaim_data")({
                 end;
 
                 if l_body_options_0.avoid_overlap and l_body_options_0.avoid_overlap:get() then
-                    local cur_delta = math.abs(rage.antiaim:get_desync_delta());
+                    -- Получаем текущую desync дельту через разницу между body yaw и camera yaw
+                    local cur_delta = 0
+                    pcall(function()
+                        local localplayer = entity.get_local_player()
+                        if localplayer and localplayer:is_alive() then
+                            local body_yaw = localplayer:get_prop("m_flPoseParameter", 11) * 120 - 60
+                            cur_delta = math.abs(body_yaw)
+                        end
+                    end)
                     if cur_delta < 25 then
                         desync_l = math.max(desync_l, 56);
                         desync_r = math.max(desync_r, 56);
@@ -17095,7 +17105,10 @@ v722:struct("antiaim_data")({
             end
 
             if is_feat("Fake Angles") then
-                local max_desync = rage.antiaim:get_max_desync() or 0
+                local max_desync = 0
+                pcall(function()
+                    max_desync = rage.antiaim:get_max_desync() or 0
+                end)
                 local fake_col = color(196, 15, 15):lerp(color(132, 196, 20), math.clamp(max_desync / 58, 0, 1))
                 add_indicator(fake_col, "FAKE")
             end
@@ -18539,8 +18552,14 @@ v722:struct("antiaim_data")({
                     end
 
                     if show_desync then
-                        local max_dsc = math.max(1, rage.antiaim:get_max_desync() or 58)
-                        local cur_dsc = math.min(math.abs((rage.antiaim:get_rotation(true) or 0) - (rage.antiaim:get_rotation() or 0)), max_dsc) / max_dsc
+                        local max_dsc = 58
+                        local cur_dsc = 0
+                        pcall(function()
+                            max_dsc = math.max(1, rage.antiaim:get_max_desync() or 58)
+                            local rot = rage.antiaim:get_rotation() or 0
+                            local rot_t = rage.antiaim:get_rotation(true) or 0
+                            cur_dsc = math.min(math.abs(rot_t - rot), max_dsc) / max_dsc
+                        end)
                         local dsc_f = u179("ev_star_dsc", cur_dsc)
                         if dsc_f >= 0.09 then
                             local c1 = acc:alpha_modulate(alpha_byte)
@@ -18715,7 +18734,12 @@ v722:struct("antiaim_data")({
                     table.insert(s_items, { txt = "DUCK", col = c_base })
                 end
                 if has_s(1) then
-                    local dlt = math.min(58, math.abs((rage.antiaim:get_rotation(true) or 0) - (rage.antiaim:get_rotation() or 0)))
+                    local dlt = 0
+                    pcall(function()
+                        local rot = rage.antiaim:get_rotation() or 0
+                        local rot_t = rage.antiaim:get_rotation(true) or 0
+                        dlt = math.min(58, math.abs(rot_t - rot))
+                    end)
                     table.insert(s_items, { txt = "FAKE", col = c_red:lerp(c_green, dlt / 60) })
                 end
 
