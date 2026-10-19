@@ -16,7 +16,7 @@ local v722 -- forward declaration
 -- Пользователи и друзья со старой версией увидят новый номер
 -- и Neverlose автоматически скачает им обновление с вашего GitHub!
 -- ============================================================
-local SCRIPT_BUILD = 7
+local SCRIPT_BUILD = 8
 
 -- ============================================================
 -- USER PRIVILEGE CHECK: ADMIN vs NIGHTLY (Steam ID & Username)
@@ -5374,6 +5374,14 @@ update = function(v43, select_name)
                     team_only = gear:switch("Team members only", true)
                 }
             end, "Shares real-time enemy visibility, health, and dormant positions with players using this Lua via game voice packets."),
+            shared_tab_icon = v167.groups.other:switch("\001\f<id-badge>\r\tShared Scoreboard Icon", true, function(gear)
+                return {
+                    icon_type = gear:combo("My Lua Icon", {"Caelestis", "Microwave", "Rayman", "Cycle (Animated)"}),
+                    show_local = gear:switch("Show for Local Player", true),
+                    show_killfeed = gear:switch("Show in Killfeed", true),
+                    show_spectator = gear:switch("Show in Spectator Bar", true)
+                }
+            end, "Displays custom Lua icons in TAB Scoreboard, Killfeed & Spectator Bar via voice packets for Caelestis, Microwave & Rayman users."),
             auto_kill_t = v167.groups.other:switch("\001\f<skull>\r\tAuto Kill on Round End (T)", false),
             addons = v167.groups.other:selectable("\v\239\151\189   \rAddons", "Disable use opens buy menu", "No sleeves", "Clear console on round start", "Proper skybox", "Disable ragdoll physics", "Hide weapon numbers", "Hide location", "Hide bomb alerts"),
             warmup_setup = v167.groups.other:label("\001\f<fire-flame-curved>\r\tWarmup", function(arg_ws)
@@ -5773,6 +5781,9 @@ update = function(v43, select_name)
         end
         if v167.elements.shared_esp then
             v167.elements.shared_esp:tooltip("Real-time P2P sharing of enemy positions, health, and dormant ESP via CS:GO voice packets between all players using this Lua.");
+        end
+        if v167.elements.shared_tab_icon then
+            v167.elements.shared_tab_icon:tooltip("Displays Lua icons (Caelestis, Microwave, etc.) in TAB Scoreboard via voice packets.");
         end
         v167.elements.zeus_warning:tooltip("Draws a little exclamation mark above enemy's head if they're likely to zeus you.");
         v167.elements.gamesense_indicators:tooltip("Renders classic Gamesense screen-edge indicators on the left side and spectator list.\nMutually exclusive with Side Indicators.");
@@ -15637,15 +15648,17 @@ v722:struct("antiaim_data")({
 
             local _ = v504.localplayer:side();
             local v516 = nil;
-            local v517 = math.random(1, v514.yaw_options_ex.delay_sliders:get());
-            if v514.yaw_options_ex.delay:get() then
-                v504.delay_method = v514["delay_" .. v517]:get();
+            local num_sliders = (v514.yaw_options_ex and v514.yaw_options_ex.delay_sliders and v514.yaw_options_ex.delay_sliders:get()) or 1;
+            local v517 = math.random(1, math.max(1, num_sliders));
+            if v514.yaw_options_ex and v514.yaw_options_ex.delay and v514.yaw_options_ex.delay:get() then
+                v504.delay_method = (v514["delay_" .. v517] and v514["delay_" .. v517]:get()) or 1;
             else
                 v504.delay_method = 1;
             end;
             if globals.choked_commands == 0 then
-                v504.packets = v504.packets + 1;
-                if v504.packets - v504.last_flick_at >= v504.delay_method then
+                v504.packets = (v504.packets or 0) + 1;
+                v504.last_flick_at = v504.last_flick_at or 0;
+                if v504.packets - v504.last_flick_at >= (v504.delay_method or 1) then
                     v504.flicker = not v504.flicker;
                     v504.last_flick_at = v504.packets;
                 end;
@@ -17980,7 +17993,7 @@ v722:struct("antiaim_data")({
                             self.shared_targets[idx] = nil
                         else
                             local alpha = math.max(0, math.min(1, 1 - (elapsed / lifetime)))
-                            local a = math.floor(alpha * (esp_col.a or 230))
+                                    local a = math.floor(alpha * (esp_col.a or 230))
                             if a < 5 then
                                 self.shared_targets[idx] = nil
                             else
@@ -18043,7 +18056,7 @@ v722:struct("antiaim_data")({
             end
         end
 
-        -- ── CLEANUP ──────────────────────────────────────────────────────────────
+        -- в”Ђв”Ђ CLEANUP в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         local function restore_voice()
             if self.saved_voice_enable ~= nil and cvar.voice_enable then
                 cvar.voice_enable:int(self.saved_voice_enable)
@@ -18066,6 +18079,559 @@ v722:struct("antiaim_data")({
         events.shutdown(restore_voice)
         events.round_start(function() self.shared_targets = {} end)
         events.level_init(function()  self.shared_targets = {} end)
+    end
+}):struct("shared_scoreboard_icon")({
+    ui_structure = nil,
+    magic = 0xCA7B,
+    last_send_tick = 0,
+    last_update_time = 0,
+    last_kf_time = 0,
+    known_users = {},
+    saved_voice_enable = nil,
+    panorama = nil,
+
+    icons = {
+        [1] = "https://raw.githubusercontent.com/jesusanet/icon/main/caelestis_orbit_512.png",
+        [2] = "https://raw.githubusercontent.com/Rosecod337/MicrowaveLoader-updates/main/microwave_mw_64.png",
+        [3] = "https://raw.githubusercontent.com/idkman-nikto/rayman/7771c5317e99e4fa8ad0bac64e88cc6bcf39f93a/rayman_icon.png"
+    },
+
+    lua_names = {
+        [1] = "Caelestis",
+        [2] = "Microwave",
+        [3] = "Rayman"
+    },
+
+    init_panorama = function(self)
+        if self.panorama then return self.panorama end
+        local ok, res = pcall(function()
+            return panorama.loadstring([[
+                let _set_icon = function(entity_index, icon_url) {
+                    if (!entity_index || entity_index < 0) return;
+                    let xuid = GameStateAPI.GetPlayerXuidStringFromEntIndex(entity_index);
+                    if (!xuid || xuid === "0" || xuid === "-1") return;
+
+                    let cp = $.GetContextPanel();
+                    if (!cp) return;
+                    let ctx = cp.FindChildTraverse("ScoreboardContainer") || cp.FindChildTraverse("id-eom-scoreboard-container");
+                    if (!ctx) return;
+                    let sb = ctx.FindChildTraverse("Scoreboard");
+                    if (!sb) return;
+
+                    sb.FindChildrenWithClassTraverse("sb-row").forEach(function(row) {
+                        if (row.m_xuid !== xuid) return;
+
+                        row.Children().forEach(function(col) {
+                            if (col.GetAttributeString("data-stat", "") === "rank") {
+                                let img = col.FindChildTraverse("image");
+                                if (img && img.IsValid()) {
+                                    if (icon_url && icon_url !== "") {
+                                        img.SetImage(icon_url);
+                                        img.style.width = "22px";
+                                        img.style.height = "22px";
+                                        img.style.horizontalAlign = "center";
+                                        img.style.verticalAlign = "center";
+                                        img.style.opacity = "1.0";
+                                        img.style.visibility = "visible";
+                                    }
+                                }
+                            }
+                        });
+                    });
+                };
+
+                let _clear_all = function() {
+                    let cp = $.GetContextPanel();
+                    if (cp && cp.IsValid()) {
+                        let badge = cp.FindChildTraverse("LuaSpecBadge");
+                        if (badge && badge.IsValid()) {
+                            badge.DeleteAsync(0);
+                        }
+                    }
+                };
+
+
+                let _update_killfeed = function(users_json) {
+                    if (!users_json) return;
+                    let users = null;
+                    try { users = JSON.parse(users_json); } catch(e) { return; }
+                    if (!users) return;
+
+                    let cp = $.GetContextPanel();
+                    if (!cp) return;
+
+                    let kf = cp.FindChildTraverse("HudDeathNotice") || cp.FindChildTraverse("DeathNotices");
+                    if (!kf) {
+                        let _search = function(p) {
+                            if (!p || !p.IsValid()) return null;
+                            let id = (p.id || "").toLowerCase();
+                            if (id.indexOf("deathnotice") !== -1 || id.indexOf("death_notice") !== -1) return p;
+                            let cnt = p.GetChildCount();
+                            for (let i = 0; i < cnt; i++) {
+                                let f = _search(p.GetChild(i));
+                                if (f) return f;
+                            }
+                            return null;
+                        };
+                        kf = _search(cp);
+                    }
+                    if (!kf || !kf.IsValid()) return;
+
+                    let _find_labels = function(p, list) {
+                        if (!p || !p.IsValid()) return;
+                        try {
+                            let t = p.text;
+                            if (t !== undefined && t !== null && String(t).length > 0) {
+                                list.push(p);
+                            }
+                        } catch(e) {}
+                        try {
+                            let chCount = p.GetChildCount();
+                            for (let c = 0; c < chCount; c++) {
+                                _find_labels(p.GetChild(c), list);
+                            }
+                        } catch(e) {}
+                    };
+
+                    let _match_url = function(raw_str) {
+                        if (!raw_str || typeof raw_str !== "string") return null;
+                        let clean = raw_str.trim();
+                        if (clean.length === 0) return null;
+                        if (users[clean]) return users[clean];
+
+                        let noDots = clean.replace(/[\.\s…]+$/, "");
+                        if (noDots.length >= 2 && users[noDots]) return users[noDots];
+
+                        for (let k in users) {
+                            if (!k || k.length < 2) continue;
+                            let kClean = k.replace(/[\.\s…]+$/, "");
+                            if (clean.indexOf(kClean) !== -1 || kClean.indexOf(noDots) !== -1) {
+                                return users[k];
+                            }
+                        }
+                        return null;
+                    };
+
+                    let rows = [];
+                    try {
+                        let classRows = kf.FindChildrenWithClassTraverse("DeathNotice_Notification") || [];
+                        if (classRows.length > 0) {
+                            rows = classRows;
+                        }
+                    } catch(e) {}
+                    if (rows.length === 0) {
+                        let cnt = kf.GetChildCount();
+                        for (let i = 0; i < cnt; i++) {
+                            rows.push(kf.GetChild(i));
+                        }
+                    }
+
+                    for (let i = 0; i < rows.length; i++) {
+                        let row = rows[i];
+                        if (!row || !row.IsValid()) continue;
+
+                        let labels = [];
+                        _find_labels(row, labels);
+
+                        labels.forEach(function(lbl) {
+                            let icon_url = _match_url(lbl.text);
+                            if (!icon_url) {
+                                let xuid = "";
+                                try { xuid = lbl.GetAttributeString("data-xuid", "") || lbl.GetAttributeString("xuid", ""); } catch(e) {}
+                                if (xuid && users[xuid]) {
+                                    icon_url = users[xuid];
+                                }
+                            }
+
+                            let parent = lbl.GetParent();
+                            if (!parent || !parent.IsValid()) return;
+
+                            let imgId = "LuaKfIcon_" + (lbl.id && lbl.id !== "" ? lbl.id : "lbl");
+                            let img = parent.FindChild(imgId);
+
+                            if (icon_url) {
+                                if (!img) {
+                                    img = $.CreatePanel("Image", parent, imgId);
+                                    if (img) {
+                                        parent.MoveChildBefore(img, lbl);
+                                    }
+                                }
+                                if (img && img.IsValid()) {
+                                    img.SetImage(icon_url);
+                                    img.style.width = "24px";
+                                    img.style.height = "24px";
+                                    img.style.marginRight = "5px";
+                                    img.style.verticalAlign = "center";
+                                    img.style.align = "center center";
+                                    img.style.opacity = "1.0";
+                                    img.style.visibility = "visible";
+                                }
+                            } else if (img && img.IsValid()) {
+                                img.style.opacity = "0.0";
+                                img.SetImage("");
+                            }
+                        });
+                    }
+                };
+
+                let _set_spec_info = function(lua_name, icon_url) {
+                    let cp = $.GetContextPanel();
+                    if (!cp || !cp.IsValid()) return;
+
+                    let specRoot = cp.FindChildTraverse("HudSpecPlayer");
+                    if (!specRoot || !specRoot.IsValid()) return;
+
+                    let bg = specRoot.FindChildTraverse("HudSpecplayerBG") || specRoot.FindChildTraverse("HudSpecplayerContainer") || specRoot;
+                    if (!bg || !bg.IsValid()) return;
+
+                    let badge = bg.FindChild("LuaSpecBadge");
+                    if (!lua_name || lua_name === "") {
+                        if (badge && badge.IsValid()) {
+                            badge.style.visibility = "collapse";
+                        }
+                        return;
+                    }
+
+                    if (!badge) {
+                        badge = $.CreatePanel("Panel", bg, "LuaSpecBadge");
+                    }
+                    if (!badge || !badge.IsValid()) return;
+
+                    badge.style.visibility = "visible";
+                    badge.style.flowChildren = "right";
+                    badge.style.horizontalAlign = "right";
+                    badge.style.verticalAlign = "center";
+                    badge.style.marginRight = "14px";
+                    badge.style.marginBottom = "6px";
+                    badge.style.padding = "3px 8px";
+                    badge.style.backgroundColor = "rgba(10, 15, 26, 0.72)";
+                    badge.style.borderRadius = "4px";
+                    badge.style.border = "1px solid rgba(147, 197, 253, 0.35)";
+
+                    let img = badge.FindChild("LuaSpecBadgeIcon");
+                    if (!img) {
+                        img = $.CreatePanel("Image", badge, "LuaSpecBadgeIcon");
+                    }
+                    if (img && img.IsValid()) {
+                        if (icon_url && icon_url !== "") {
+                            img.SetImage(icon_url);
+                            img.style.width = "18px";
+                            img.style.height = "18px";
+                            img.style.marginRight = "6px";
+                            img.style.verticalAlign = "center";
+                            img.style.visibility = "visible";
+                        } else {
+                            img.style.visibility = "collapse";
+                        }
+                    }
+
+                    let lbl = badge.FindChild("LuaSpecBadgeText");
+                    if (!lbl) {
+                        lbl = $.CreatePanel("Label", badge, "LuaSpecBadgeText");
+                    }
+                    if (lbl && lbl.IsValid()) {
+                        lbl.text = lua_name;
+                        lbl.style.fontSize = "15px";
+                        lbl.style.fontFamily = "Stratum2, 'Arial Unicode MS', sans-serif";
+                        lbl.style.fontWeight = "bold";
+                        lbl.style.color = "#c7d2fe";
+                        lbl.style.verticalAlign = "center";
+                        lbl.style.textShadow = "1px 1px 2px #000000";
+                    }
+                };
+
+                return {
+                    set_icon: _set_icon,
+                    clear_all: _clear_all,
+                    update_killfeed: _update_killfeed,
+                    set_spec_info: _set_spec_info
+                };
+            ]], "CSGOHud")()
+        end)
+        if ok and res then
+            self.panorama = res
+        end
+        return self.panorama
+    end,
+
+    init = function(self, ui_structure)
+        self.ui_structure = ui_structure
+        local elem = self.ui_structure.other.elements.shared_tab_icon
+        if not elem then return end
+
+        self:init_panorama()
+
+        -- ── PACKET SENDER ──────────────────────────────────────────────
+        local function get_local_script_id()
+            local chosen_mode = elem.icon_type and elem.icon_type:get() or "Caelestis"
+            if chosen_mode == "Microwave" then
+                return 2
+            elseif chosen_mode == "Rayman" then
+                return 3
+            elseif chosen_mode == "Cycle (Animated)" or chosen_mode == "Cycle" then
+                return (math.floor(globals.realtime * 3) % 3) + 1
+            end
+            return 1
+        end
+
+        local function do_send(buffer)
+            if not buffer then return end
+            local me = entity.get_local_player()
+            if not me then return end
+
+            local my_script_id = get_local_script_id()
+            local sub_id = 1
+            local ver = 1
+
+            -- Packet format: magic(16) + ver(4) + script_id(4) + sub_id(4) + chk(8)
+            buffer:write_bits(self.magic, 16)
+            buffer:write_bits(ver, 4)
+            buffer:write_bits(my_script_id, 4)
+            buffer:write_bits(sub_id, 4)
+            local chk = bit.band(self.magic + ver + my_script_id + sub_id, 0xFF)
+            buffer:write_bits(chk, 8)
+        end
+
+        local function looped_send()
+            if not elem:get() then return end
+            if not globals.is_in_game or not globals.is_connected then return end
+
+            if cvar.voice_enable and cvar.voice_enable:int() == 0 then
+                if self.saved_voice_enable == nil then
+                    self.saved_voice_enable = 0
+                end
+                cvar.voice_enable:int(1)
+            end
+
+            local cur_tick = globals.tickcount
+            if math.abs(cur_tick - self.last_send_tick) < 8 then return end
+            self.last_send_tick = cur_tick
+
+            pcall(function()
+                events.voice_message:call(do_send)
+            end)
+        end
+
+        -- ── PACKET RECEIVER ────────────────────────────────────────────
+        local function on_voice_message(ctx)
+            if not elem:get() then return end
+            if not ctx or not ctx.buffer or not ctx.entity then return end
+
+            local me = entity.get_local_player()
+            if not me then return end
+            local sender = ctx.entity
+            local s_idx = sender:get_index()
+            if s_idx == me:get_index() then return end
+
+            local buf = ctx.buffer
+            buf:reset()
+
+            local magic_in = buf:read_bits(16)
+            if magic_in ~= self.magic then
+                buf:reset()
+                return
+            end
+
+            local ver = buf:read_bits(4)
+            local script_id = buf:read_bits(4)
+            local sub_id = buf:read_bits(4)
+            local chk = buf:read_bits(8)
+            buf:reset()
+
+            if chk ~= bit.band(self.magic + ver + script_id + sub_id, 0xFF) then
+                return
+            end
+
+            self.known_users[s_idx] = {
+                script_id = script_id,
+                sub_id = sub_id,
+                last_seen = globals.realtime
+            }
+
+            -- Instant update on receipt: don't wait for tab timer
+            local pano = self:init_panorama()
+            if pano then
+                local icon_url = self.icons[script_id] or self.icons[1]
+                pcall(pano.set_icon, s_idx, icon_url)
+            end
+        end
+
+        -- ── TAB UPDATE RENDER / HOOK ────────────────────────────────────
+        local function update_scoreboard()
+            if not elem:get() then return end
+            if not globals.is_in_game or not globals.is_connected then return end
+
+            local now = globals.realtime
+            local pano = self:init_panorama()
+            if not pano then return end
+
+            local me = entity.get_local_player()
+            if not me then return end
+            local my_idx = me:get_index()
+            local my_team = me.m_iTeamNum or 0
+
+            local is_tab_tick = (now - self.last_update_time >= 0.04)
+            if is_tab_tick then
+                self.last_update_time = now
+
+                -- 1. Local player icon
+                if elem.show_local and elem.show_local:get() then
+                    local my_script_id = get_local_script_id()
+                    local my_url = self.icons[my_script_id] or self.icons[1]
+                    pcall(pano.set_icon, my_idx, my_url)
+                end
+
+                -- 2. Other users in server
+                for ent_idx, info in pairs(self.known_users) do
+                    if now - (info.last_seen or 0) > 25 then
+                        self.known_users[ent_idx] = nil
+                        pcall(pano.set_icon, ent_idx, "")
+                    else
+                        local ent = entity.get(ent_idx)
+                        if ent then
+                            local icon_url = self.icons[info.script_id] or self.icons[1]
+                            pcall(pano.set_icon, ent_idx, icon_url)
+                        end
+                    end
+                end
+            end
+
+            -- 3. Killfeed icon update (runs frequently ~0.03s)
+            if elem.show_killfeed and elem.show_killfeed:get() and (now - self.last_kf_time >= 0.03) and pano.update_killfeed then
+                self.last_kf_time = now
+                local user_map = {}
+                local function add_user_to_map(name_str, url_str)
+                    if not name_str or name_str == "" or not url_str then return end
+                    user_map[name_str] = url_str
+                    local trimmed = name_str:match("^%s*(.-)%s*$")
+                    if trimmed and trimmed ~= "" then
+                        user_map[trimmed] = url_str
+                    end
+                    for word in name_str:gmatch("%S+") do
+                        if #word >= 3 then
+                            user_map[word] = url_str
+                        end
+                    end
+                end
+
+                if elem.show_local and elem.show_local:get() then
+                    local my_name = me:get_name()
+                    local my_script_id = get_local_script_id()
+                    local my_url = self.icons[my_script_id] or self.icons[1]
+                    add_user_to_map(my_name, my_url)
+                    if cvar.name then
+                        pcall(function() add_user_to_map(cvar.name:string(), my_url) end)
+                    end
+                end
+
+                for ent_idx, info in pairs(self.known_users) do
+                    local ent = entity.get(ent_idx)
+                    if ent then
+                        local icon_url = self.icons[info.script_id] or self.icons[1]
+                        local ent_name = ent:get_name()
+                        add_user_to_map(ent_name, icon_url)
+                    end
+                end
+
+                local ok_json, json_str = pcall(json.stringify, user_map)
+                if ok_json and json_str then
+                    pcall(pano.update_killfeed, json_str)
+                end
+            end
+
+            -- 4. Spectator bar Lua badge
+            if elem.show_spectator and elem.show_spectator:get() and pano.set_spec_info then
+                local spec_target = nil
+                if not me:is_alive() then
+                    spec_target = me.m_hObserverTarget
+                    if type(spec_target) == "number" then
+                        spec_target = entity.get(spec_target)
+                    end
+                end
+
+                local lua_name = ""
+                local lua_icon = ""
+
+                if spec_target and spec_target:is_player() then
+                    local t_idx = spec_target:get_index()
+                    local info = self.known_users[t_idx]
+                    if info then
+                        lua_name = self.lua_names[info.script_id] or "Caelestis"
+                        lua_icon = self.icons[info.script_id] or self.icons[1]
+                    elseif t_idx == my_idx and elem.show_local and elem.show_local:get() then
+                        local my_script_id = get_local_script_id()
+                        lua_name = self.lua_names[my_script_id] or "Caelestis"
+                        lua_icon = self.icons[my_script_id] or self.icons[1]
+                    end
+                end
+
+                pcall(pano.set_spec_info, lua_name, lua_icon)
+            end
+        end
+
+        local function cleanup()
+            if self.panorama then
+                pcall(self.panorama.clear_all)
+            end
+            self.known_users = {}
+            if self.saved_voice_enable ~= nil and cvar.voice_enable then
+                cvar.voice_enable:int(self.saved_voice_enable)
+                self.saved_voice_enable = nil
+            end
+        end
+
+        local function on_toggle(v)
+            local is_on = v and v:get() == true
+            events.voice_message(on_voice_message, is_on)
+            events.createmove(looped_send, is_on)
+            events.net_update_end(update_scoreboard, is_on)
+            if is_on then
+                self.last_send_tick = 0
+                self.last_update_time = 0
+                update_scoreboard()
+            else
+                cleanup()
+            end
+        end
+
+        elem:set_callback(on_toggle, true)
+        if elem.icon_type then
+            elem.icon_type:set_callback(function()
+                self.last_send_tick = 0
+                self.last_update_time = 0
+                update_scoreboard()
+            end)
+        end
+        if elem.show_local then
+            elem.show_local:set_callback(function()
+                self.last_update_time = 0
+                update_scoreboard()
+            end)
+        end
+        if elem.show_spectator then
+            elem.show_spectator:set_callback(function()
+                local pano = self:init_panorama()
+                if pano and pano.set_spec_info and not elem.show_spectator:get() then
+                    pcall(pano.set_spec_info, "", "")
+                end
+                update_scoreboard()
+            end)
+        end
+        events.shutdown(cleanup)
+        events.level_init(function()
+            cleanup()
+            self.last_send_tick = 0
+            self.last_update_time = 0
+        end)
+        events.player_death(function()
+            self.last_kf_time = 0
+            update_scoreboard()
+        end)
+        events.round_start(function()
+            self.last_send_tick = 0
+            self.last_update_time = 0
+            update_scoreboard()
+        end)
     end
 }):struct("auto_kill_t")({
     ui_structure = nil,
@@ -22038,6 +22604,7 @@ local _init_steps = {
     { "better_interactions", function() v722.better_interactions:init(v722) end },
     { "fps_optimizer", function() v722.fps_optimizer:init(v722) end },
     { "shared_esp", function() v722.shared_esp:init(v722) end },
+    { "shared_scoreboard_icon", function() v722.shared_scoreboard_icon:init(v722) end },
     { "auto_kill_t", function() v722.auto_kill_t:init(v722) end },
     { "nade_radius", function() v722.nade_radius:init(v722) end },
     { "visualize_exploits", function() v722.visualize_exploits:init(v722) end },
