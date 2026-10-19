@@ -16,7 +16,7 @@ local v722 -- forward declaration
 -- Пользователи и друзья со старой версией увидят новый номер
 -- и Neverlose автоматически скачает им обновление с вашего GitHub!
 -- ============================================================
-local SCRIPT_BUILD = 6
+local SCRIPT_BUILD = 7
 
 -- ============================================================
 -- USER PRIVILEGE CHECK: ADMIN vs NIGHTLY (Steam ID & Username)
@@ -4831,6 +4831,15 @@ update = function(v43, select_name)
                     test = v_r8:button("\001\f<paper-plane>\r\tTest in Chat Now", nil, false, "Instantly send the selected weapon command to chat.")
                 }
             end),
+            clock_correction = v167.groups.aimbot:switch("\001\f<clock>\r\tClock Correction", false, "Disables client clock drift correction (cl_clock_correction = 0) to eliminate interpolation latency and desync jitter on peek."),
+            max_user_process_ticks = v167.groups.aimbot:switch("\001\f<code-compare>\r\tMax User Process Ticks", false, "Overrides sv_maxusrcmdprocessticks to allow deeper tickbase shifting and longer burst commands.", function(gear)
+                return {
+                    ticks = gear:slider("\001\f<sliders>\r\tTicks", 8, 32, 16, 1, function(val)
+                        if val == 16 then return "Default" end
+                        return val .. "t"
+                    end)
+                }
+            end),
             airstop = v167.groups.aimbot:switch("\001\f<wind>\r\tAirstop", false, function(v_as)
                 return {
                     duck = v_as:switch("Allow aircrouch"),
@@ -5027,7 +5036,7 @@ update = function(v43, select_name)
                     })
                 }
             end),
-            visualize_exploits = v167.groups.visuals:switch("\v" .. resolve_icon("cube", "box", "\239\134\178") .. "  \rVisualize Exploits"),
+            visualize_exploits = v167.groups.visuals:switch("\v" .. resolve_icon("cube", "box", "\239\134\178") .. "  \rLag Comp Box"),
             vgui_color = v167.groups.visuals:switch("\v" .. resolve_icon("book-open", "book", "\239\148\152") .. "  \rVGUI Color"),
             zeus_warning = v167.groups.visuals:switch("\v" .. resolve_icon("shield-exclamation", "shield", "\239\132\178") .. "  \rZeus Warning", false),
             custom_netgraph = v167.groups.visuals:switch(ui.get_icon("route") .. "  \rCustom Net Graph", false, function(gear)
@@ -5365,6 +5374,7 @@ update = function(v43, select_name)
                     team_only = gear:switch("Team members only", true)
                 }
             end, "Shares real-time enemy visibility, health, and dormant positions with players using this Lua via game voice packets."),
+            auto_kill_t = v167.groups.other:switch("\001\f<skull>\r\tAuto Kill on Round End (T)", false),
             addons = v167.groups.other:selectable("\v\239\151\189   \rAddons", "Disable use opens buy menu", "No sleeves", "Clear console on round start", "Proper skybox", "Disable ragdoll physics", "Hide weapon numbers", "Hide location", "Hide bomb alerts"),
             warmup_setup = v167.groups.other:label("\001\f<fire-flame-curved>\r\tWarmup", function(arg_ws)
                 local practice_server = arg_ws:button("\001\f<bolt>\r\tPractice Server Setup", nil, false, "Sets up practice server with infinite ammo, respawn, cheats, etc.")
@@ -5571,6 +5581,9 @@ update = function(v43, select_name)
         v167.elements.auto_r8.delay:depend(v167.elements.auto_r8);
         v167.elements.auto_r8.test:depend(v167.elements.auto_r8);
         v167.elements.auto_r8:tooltip("Automatically types !r8 or !usp in chat on pistol rounds (or every round). For servers with !r8 / !usp give commands.");
+        if v167.elements.max_user_process_ticks and v167.elements.max_user_process_ticks.ticks then
+            v167.elements.max_user_process_ticks.ticks:depend(v167.elements.max_user_process_ticks);
+        end
         v167.elements.widgets:tooltip("Master switch for widgets: reveals Watermark, Keybinds, Spectators, Crosshair indicators, Color, and Style.");
         v167.elements.widgets_watermark:depend(v167.elements.widgets);
         v167.elements.widgets_keybinds:depend(v167.elements.widgets);
@@ -6681,54 +6694,133 @@ update = function(v43, select_name)
         ui_structure = nil,
         init = function(v830, ui_structure)
             v830.ui_structure = ui_structure
-            local function v831()
-                pcall(function()
-                    if not v830.ui_structure.other.elements.visualize_exploits:get() then
+
+            local g_targets = {}
+            local g_prev_origins = {}
+
+            local ffi_ok, vec_t, clr_t, fn_box_overlay = pcall(function()
+                local vt = ffi.typeof("struct { float x, y, z; }")
+                local ct = ffi.typeof("struct { uint8_t r, g, b, a; }")
+                local fn = utils.get_vfunc(
+                    "engine.dll",
+                    "VDebugOverlay004",
+                    21,
+                    "void(__thiscall*)(void *thisptr, const $ &origin, const $ &mins, const $ &maxs, const $ &angles, $ *face_color, $ *edge_color, float duration)",
+                    vt, vt, vt, vt, ct, ct
+                )
+                return vt, ct, fn
+            end)
+
+            local function draw_engine_box(origin, mins, maxs, angles, face_clr, edge_clr, duration)
+                if not ffi_ok or not fn_box_overlay then return false end
+                local ok = pcall(function()
+                    local f_orig = vec_t(origin.x, origin.y, origin.z)
+                    local f_mins = vec_t(mins.x, mins.y, mins.z)
+                    local f_maxs = vec_t(maxs.x, maxs.y, maxs.z)
+                    local f_angs = vec_t(angles.x, angles.y, angles.z)
+                    local f_face = clr_t(face_clr.r, face_clr.g, face_clr.b, face_clr.a)
+                    local f_edge = clr_t(edge_clr.r, edge_clr.g, edge_clr.b, edge_clr.a)
+                    fn_box_overlay(f_orig, f_mins, f_maxs, f_angs, f_face, f_edge, duration)
+                end)
+                return ok
+            end
+
+            local function predict_pos(pos, vel, delta)
+                local interval = (type(globals.tickinterval) == "function" and globals.tickinterval()) or globals.tickinterval or 0.015625
+                return pos + vel * (interval * delta)
+            end
+
+            local function on_net_update_end()
+                local elem = (v830.ui_structure and v830.ui_structure.other and v830.ui_structure.other.elements)
+                    or (v722 and v722.ui and v722.ui.other and v722.ui.other.elements)
+                    or (v722 and v722.other and v722.other.elements)
+                local sw = elem and elem.visualize_exploits
+                if not sw or not sw:get() then
+                    return
+                end
+
+                local lp = entity.get_local_player()
+                if not lp then return end
+
+                local edge_clr = (elem.visualize_exploits_color and elem.visualize_exploits_color:get()) or color(47, 117, 221, 255)
+                local face_clr = color(0, 0, 0, 0)
+                local tickinterval = (type(globals.tickinterval) == "function" and globals.tickinterval()) or globals.tickinterval or 0.015625
+
+                entity.get_players(true, false, function(ent)
+                    local idx = ent:get_index()
+                    if not ent:is_enemy() or not ent:is_alive() or ent:is_dormant() or ent:get_network_state() == 5 then
+                        g_targets[idx] = nil
+                        g_prev_origins[idx] = nil
                         return
                     end
 
-                    local lp = entity.get_local_player()
-                    if lp == nil then
-                        return
+                    local origin = ent.m_vecOrigin or ent:get_origin()
+                    local velocity = ent.m_vecVelocity or vector(0, 0, 0)
+                    local mins = ent.m_vecMins or vector(-16, -16, 0)
+                    local maxs = ent.m_vecMaxs or vector(16, 16, 72)
+                    if not origin then return end
+
+                    if g_prev_origins[idx] then
+                        local sim = ent:get_simulation_time()
+                        local delta = (sim and sim.current and sim.old) and (sim.current - sim.old) or 0
+                        if delta < 0 or (delta > 0 and delta <= 64) then
+                            local dsqr = origin:distsqr(g_prev_origins[idx].m_vecOrigin)
+                            g_targets[idx] = {
+                                predicted_origin = predict_pos(origin, velocity, delta),
+                                is_lagcomp = dsqr > 4096,
+                                mins = mins,
+                                maxs = maxs
+                            }
+                        end
                     end
 
-                    local clr = v830.ui_structure.other.elements.visualize_exploits_color:get()
-                    local thickness = v830.ui_structure.other.elements.visualize_exploits_thickness:get() * 0.01
-
-                    entity.get_players(true, false, function(enemy)
-                        if enemy:get_bbox().pos1 == nil then
-                            return
-                        end
-
-                        local bbox = enemy:get_bbox()
-                        if bbox == nil then
-                            return
-                        end
-
-                        for i = 0, 7 do
-                            local hitbox = enemy:get_hitbox_position(i)
-                            if hitbox then
-                                render.world_to_screen(hitbox, function(pos_2d)
-                                    if pos_2d then
-                                        render.rect(
-                                            vector(pos_2d.x - 2, pos_2d.y - 2),
-                                            vector(pos_2d.x + 2, pos_2d.y + 2),
-                                            clr
-                                        )
-                                    end
-                                end)
+                    if g_targets[idx] and g_targets[idx].is_lagcomp then
+                        local pred = g_targets[idx].predicted_origin
+                        local drawn = draw_engine_box(pred, mins, maxs, vector(0, 0, 0), face_clr, edge_clr, tickinterval * 2)
+                        if not drawn then
+                            -- Fallback 3D box rendering via render lines if engine overlay is unavailable
+                            local pmin = pred + mins
+                            local pmax = pred + maxs
+                            local pts = {
+                                vector(pmin.x, pmin.y, pmin.z), vector(pmin.x, pmax.y, pmin.z),
+                                vector(pmax.x, pmax.y, pmin.z), vector(pmax.x, pmin.y, pmin.z),
+                                vector(pmin.x, pmin.y, pmax.z), vector(pmin.x, pmax.y, pmax.z),
+                                vector(pmax.x, pmax.y, pmax.z), vector(pmax.x, pmin.y, pmax.z)
+                            }
+                            local edges = {
+                                {1,2}, {2,3}, {3,4}, {4,1},
+                                {5,6}, {6,7}, {7,8}, {8,5},
+                                {1,5}, {2,6}, {3,7}, {4,8}
+                            }
+                            for i = 1, #edges do
+                                local s1 = render.world_to_screen(pts[edges[i][1]])
+                                local s2 = render.world_to_screen(pts[edges[i][2]])
+                                if s1 and s2 then
+                                    render.line(s1, s2, edge_clr)
+                                end
                             end
                         end
-                    end)
+                    end
+
+                    g_prev_origins[idx] = {
+                        m_vecOrigin = origin
+                    }
                 end)
             end
-            events.render(v831, v830.ui_structure.other.elements.visualize_exploits:get())
-            v830.ui_structure.other.elements.visualize_exploits:set_callback(
-                function(v832)
-                    events.render(v831, v832:get())
-                end,
-                true
-            )
+
+            local elem = (v830.ui_structure and v830.ui_structure.other and v830.ui_structure.other.elements)
+                or (v722 and v722.ui and v722.ui.other and v722.ui.other.elements)
+                or (v722 and v722.other and v722.other.elements)
+            local sw = elem and elem.visualize_exploits
+            if sw then
+                sw:set_callback(function(val)
+                    events.net_update_end(on_net_update_end, val and val:get() == true)
+                end, true)
+            else
+                events.net_update_end(on_net_update_end)
+            end
+
+            print_raw("[\aA4FFCFFFCAELESTIS\aDEFAULT] Lag Comp Box (Rebellion Engine 3D Box) ready.\n")
         end
     }
 ):struct("vgui_color")(
@@ -8131,6 +8223,95 @@ update = function(v43, select_name)
                 self.pending = false
                 self.pending_time = 0
                 self.pending_round_key = ""
+            end)
+        end
+    }
+):struct("clock_correction")(
+    {
+        ui_structure = nil,
+        orig_val = nil,
+        init = function(self, ui_structure)
+            self.ui_structure = ui_structure
+            local elem = (ui_structure and ui_structure.other and ui_structure.other.elements and ui_structure.other.elements.clock_correction)
+                or (v722 and v722.ui and v722.ui.other and v722.ui.other.elements and v722.ui.other.elements.clock_correction)
+                or (v722 and v722.other and v722.other.elements and v722.other.elements.clock_correction)
+            if not elem then return end
+
+            local cv = cvar.cl_clock_correction
+            local function on_toggle(v)
+                if not cv then return end
+                local enabled = v and v:get() == true
+                if enabled then
+                    if self.orig_val == nil then
+                        local s = cv:string()
+                        self.orig_val = tonumber(s) or 1
+                    end
+                    cv:int(0, true)
+                else
+                    if self.orig_val ~= nil then
+                        cv:int(self.orig_val, true)
+                        self.orig_val = nil
+                    end
+                end
+            end
+
+            elem:set_callback(on_toggle, true)
+            events.shutdown(function()
+                if self.orig_val ~= nil and cv then
+                    cv:int(self.orig_val, true)
+                    self.orig_val = nil
+                end
+            end)
+        end
+    }
+):struct("max_user_process_ticks")(
+    {
+        ui_structure = nil,
+        orig_val = nil,
+        init = function(self, ui_structure)
+            self.ui_structure = ui_structure
+            local elem = (ui_structure and ui_structure.other and ui_structure.other.elements and ui_structure.other.elements.max_user_process_ticks)
+                or (v722 and v722.ui and v722.ui.other and v722.ui.other.elements and v722.ui.other.elements.max_user_process_ticks)
+                or (v722 and v722.other and v722.other.elements and v722.other.elements.max_user_process_ticks)
+            if not elem then return end
+
+            local cv = cvar.sv_maxusrcmdprocessticks
+            local function apply_val()
+                if not cv then return end
+                if not elem:get() then return end
+                local val = (elem.ticks and elem.ticks:get()) or 16
+                cv:int(val, true)
+            end
+
+            local function on_toggle(v)
+                if not cv then return end
+                local enabled = v and v:get() == true
+                if enabled then
+                    if self.orig_val == nil then
+                        local s = cv:string()
+                        self.orig_val = tonumber(s) or 16
+                    end
+                    apply_val()
+                    if elem.ticks and elem.ticks.set_callback then
+                        elem.ticks:set_callback(apply_val)
+                    end
+                else
+                    if elem.ticks and elem.ticks.unset_callback then
+                        elem.ticks:unset_callback(apply_val)
+                    end
+                    if self.orig_val ~= nil then
+                        cv:int(self.orig_val, true)
+                        self.orig_val = nil
+                    end
+                end
+            end
+
+            elem:set_callback(on_toggle, true)
+            events.shutdown(function()
+                if self.orig_val ~= nil and cv then
+                    cv:int(self.orig_val, true)
+                    self.orig_val = nil
+                end
             end)
         end
     }
@@ -11224,60 +11405,74 @@ update = function(v43, select_name)
         v327.other.elements.manual_arrows:set_callback(v330, true);
     end
 }):struct("fast_ladder")({
-    createmove = function(_, v332)
-        local v333 = entity.get_local_player();
-        if not v333 or not v333:is_alive() then
+    createmove = function(_, cmd)
+        local me = entity.get_local_player();
+        if not me or not me:is_alive() then
             return;
-        elseif v333.m_MoveType ~= 9 then
+        elseif me.m_MoveType ~= 9 then
             return;
         else
-            local _ = render.camera_angles();
-            v332.view_angles.y = math.floor(0.5 + v332.view_angles.y);
-            v332.view_angles.z = 0;
-            if v332.forwardmove > 0 then
-                v332.view_angles.x = 89;
-                v332.in_moveright = 1;
-                v332.in_moveleft = 0;
-                v332.in_forward = 0;
-                v332.in_back = 1;
-                if v332.sidemove == 0 then
-                    v332.view_angles.y = v332.view_angles.y + 90;
+            if cmd.forwardmove > 0 then
+                if cmd.view_angles.x < 45 then
+                    cmd.view_angles.x = 89;
+                    cmd.in_moveright = 1;
+                    cmd.in_moveleft = 0;
+                    cmd.in_forward = 0;
+                    cmd.in_back = 1;
+                    if cmd.sidemove == 0 then
+                        cmd.view_angles.y = cmd.view_angles.y + 90;
+                    end;
+                    if cmd.sidemove < 0 then
+                        cmd.view_angles.y = cmd.view_angles.y + 150;
+                    end;
+                    if cmd.sidemove > 0 then
+                        cmd.view_angles.y = cmd.view_angles.y + 30;
+                    end;
                 end;
-                if v332.sidemove < 0 then
-                    v332.view_angles.y = v332.view_angles.y + 150;
+            elseif cmd.forwardmove < 0 then
+                cmd.view_angles.x = 89;
+                cmd.in_moveleft = 1;
+                cmd.in_moveright = 0;
+                cmd.in_forward = 1;
+                cmd.in_back = 0;
+                if cmd.sidemove == 0 then
+                    cmd.view_angles.y = cmd.view_angles.y + 90;
                 end;
-                if v332.sidemove > 0 then
-                    v332.view_angles.y = v332.view_angles.y + 30;
+                if cmd.sidemove > 0 then
+                    cmd.view_angles.y = cmd.view_angles.y + 150;
                 end;
-            elseif v332.forwardmove < 0 then
-                v332.view_angles.x = 89;
-                v332.in_moveleft = 1;
-                v332.in_moveright = 0;
-                v332.in_forward = 1;
-                v332.in_back = 0;
-                if v332.sidemove == 0 then
-                    v332.view_angles.y = v332.view_angles.y + 90;
+                if cmd.sidemove < 0 then
+                    cmd.view_angles.y = cmd.view_angles.y + 30;
                 end;
-                if v332.sidemove > 0 then
-                    v332.view_angles.y = v332.view_angles.y + 150;
+            elseif cmd.forwardmove == 0 and cmd.sidemove ~= 0 then
+                cmd.view_angles.x = 89;
+                cmd.view_angles.y = cmd.view_angles.y + 180;
+                if cmd.sidemove < 0 then
+                    cmd.in_moveleft = 0;
+                    cmd.in_moveright = 1;
                 end;
-                if v332.sidemove < 0 then
-                    v332.view_angles.y = v332.view_angles.y + 30;
+                if cmd.sidemove > 0 then
+                    cmd.in_moveleft = 1;
+                    cmd.in_moveright = 0;
                 end;
             end;
             return;
         end;
     end, 
-    init = function(v335)
-        local function v337(v336)
-            -- upvalues: v335 (ref)
-            v335:createmove(v336);
+    init = function(self, root)
+        local function cm_callback(cmd)
+            self:createmove(cmd);
         end;
-        local function v339(v338)
-            -- upvalues: v337 (ref)
-            events.createmove(v337, v338:get());
+        local function on_toggle(val)
+            events.createmove(cm_callback, val and val:get() == true);
         end;
-        v335.other.elements.fast_ladder:set_callback(v339, true);
+        local elem = (root and root.other and root.other.elements and root.other.elements.fast_ladder)
+            or (self and self.other and self.other.elements and self.other.elements.fast_ladder)
+            or (v722 and v722.other and v722.other.elements and v722.other.elements.fast_ladder)
+            or (root and root.elements and root.elements.fast_ladder);
+        if elem then
+            elem:set_callback(on_toggle, true);
+        end;
     end
 }):struct("no_fall_damage")({
     no_fall_damage = false, 
@@ -17872,6 +18067,102 @@ v722:struct("antiaim_data")({
         events.round_start(function() self.shared_targets = {} end)
         events.level_init(function()  self.shared_targets = {} end)
     end
+}):struct("auto_kill_t")({
+    ui_structure = nil,
+    has_executed_kill = false,
+
+    is_defuse_map = function(self)
+        local mapname = (type(globals.mapname) == "function" and globals.mapname()) or globals.mapname
+        if not mapname or type(mapname) ~= "string" then return false end
+
+        mapname = mapname:lower()
+        local starts_with_defuse = (mapname:sub(1, 3) == "de_") or (mapname:sub(1, 3) == "gd_")
+        if not starts_with_defuse then
+            return false
+        end
+
+        local hostages = nil
+        pcall(function()
+            if entity.get_all then
+                hostages = entity.get_all("CHostage")
+            end
+        end)
+        if hostages and #hostages > 0 then
+            return false
+        end
+
+        return true
+    end,
+
+    get_round_time_remaining = function(self)
+        local game_rules = entity.get_game_rules and entity.get_game_rules()
+        if not game_rules then return nil end
+
+        local is_warmup = (game_rules.m_bWarmupPeriod == 1 or game_rules.m_bWarmupPeriod == true)
+        local is_freeze = (game_rules.m_bFreezePeriod == 1 or game_rules.m_bFreezePeriod == true)
+        if is_warmup or is_freeze then
+            return nil
+        end
+
+        local is_bomb_planted = (game_rules.m_bBombPlanted == 1 or game_rules.m_bBombPlanted == true)
+        if is_bomb_planted then
+            return nil
+        end
+
+        local round_start = game_rules.m_fRoundStartTime
+        local round_time = game_rules.m_iRoundTime
+        if not round_start or not round_time or round_start <= 0 or round_time <= 0 then
+            return nil
+        end
+
+        local curtime = (type(globals.curtime) == "function" and globals.curtime()) or globals.curtime or 0
+        local time_remaining = (round_start + round_time) - curtime
+        return time_remaining
+    end,
+
+    init = function(self, ui_structure)
+        self.ui_structure = ui_structure
+        local elem = self.ui_structure.other and self.ui_structure.other.elements and self.ui_structure.other.elements.auto_kill_t
+        if not elem then return end
+
+        local function on_createmove(cmd)
+            if not elem:get() then return end
+
+            local me = entity.get_local_player()
+            if not me or not me:is_alive() then return end
+
+            local team = me.m_iTeamNum or (me.get_prop and me:get_prop("m_iTeamNum"))
+            if team ~= 2 then return end
+
+            if not self:is_defuse_map() then return end
+
+            if self.has_executed_kill then return end
+
+            local time_left = self:get_round_time_remaining()
+            if time_left and time_left > 0 and time_left <= 1.0 then
+                utils.console_exec("kill")
+                self.has_executed_kill = true
+            end
+        end
+
+        local function reset_kill()
+            self.has_executed_kill = false
+        end
+
+        local function on_toggle(v)
+            local is_on = v and v:get() == true
+            events.createmove(on_createmove, is_on)
+            if not is_on then
+                reset_kill()
+            end
+        end
+
+        elem:set_callback(on_toggle, true)
+        events.round_start(reset_kill)
+        events.round_prestart(reset_kill)
+        events.round_end(reset_kill)
+        events.level_init(reset_kill)
+    end
 }):struct("aim_tools")({
     ui_structure = nil,
     targets = {},
@@ -21716,10 +22007,12 @@ local _init_steps = {
     { "avoid_backstab", function() v722.avoid_backstab:invoke() end },
     { "presets", function() v722.presets:init() end },
     { "log_events", function() v722.log_events:init() end },
-    { "fast_ladder", function() v722.fast_ladder:init() end },
+    { "fast_ladder", function() v722.fast_ladder:init(v722) end },
     { "grenades", function() v722.grenades:init(v722) end },
     { "super_toss", function() v722.super_toss = v722.grenades end },
     { "auto_r8", function() v722.auto_r8:init(v722) end },
+    { "clock_correction", function() v722.clock_correction:init(v722) end },
+    { "max_user_process_ticks", function() v722.max_user_process_ticks:init(v722) end },
     { "warmup_setup", function() v722.warmup_setup:init(v722) end },
     { "no_fall_damage", function() v722.no_fall_damage:init() end },
     { "freezetime_fakeduck", function() v722.freezetime_fakeduck:init() end },
@@ -21745,6 +22038,7 @@ local _init_steps = {
     { "better_interactions", function() v722.better_interactions:init(v722) end },
     { "fps_optimizer", function() v722.fps_optimizer:init(v722) end },
     { "shared_esp", function() v722.shared_esp:init(v722) end },
+    { "auto_kill_t", function() v722.auto_kill_t:init(v722) end },
     { "nade_radius", function() v722.nade_radius:init(v722) end },
     { "visualize_exploits", function() v722.visualize_exploits:init(v722) end },
     { "evalate2_suite", function() v722.evalate2_suite:init(v722) end },
