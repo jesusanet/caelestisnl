@@ -16,10 +16,10 @@ local v722 -- forward declaration
 -- Пользователи и друзья со старой версией увидят новый номер
 -- и Neverlose автоматически скачает им обновление с вашего GitHub!
 -- ============================================================
-local SCRIPT_BUILD = 8
+local SCRIPT_BUILD = 9
 
 -- ============================================================
--- USER PRIVILEGE CHECK: ADMIN vs NIGHTLY (Steam ID & Username)
+-- USER PRIVILEGE CHECK: MULTI-LAYER HARDENED ADMIN VERIFICATION
 -- ============================================================
 local ADMIN_STEAM_IDS = {
     ["76561199497732097"] = true,
@@ -29,17 +29,18 @@ local ADMIN_STEAM_IDS = {
 }
 
 local is_admin = false
+
 local function evaluate_admin_privileges()
     if is_admin then return true end
-    
-    -- 1. Проверка по нику в Neverlose
+
+    -- Factor 1: Neverlose Account Username
     local nl_uname = (common and common.get_username and tostring(common.get_username() or "")) or ""
     if nl_uname:lower() == "jesusanet" then
         is_admin = true
         return true
     end
-    
-    -- 2. Проверка по Steam ID64 / Account ID через Panorama API
+
+    -- Factor 2: Steam ID64 / Account ID / Persona Name via Panorama API
     if panorama and panorama.MyPersonaAPI then
         if panorama.MyPersonaAPI.GetXUID then
             local xuid = tostring(panorama.MyPersonaAPI.GetXUID() or "")
@@ -56,35 +57,66 @@ local function evaluate_admin_privileges()
             end
         end
     end
-    
-    -- 3. Проверка через локального игрока (в игре)
-    if entity and entity.get_local_player then
+
+    -- Factor 3: GameStateAPI Local Player XUID
+    if panorama and panorama.GameStateAPI and entity and entity.get_local_player then
         local lp = entity.get_local_player()
-        if lp then
-            local s64 = tostring((lp.get_steam_id64 and lp:get_steam_id64()) or "")
-            local sid = tostring((lp.get_steam_id and lp:get_steam_id()) or "")
-            if ADMIN_STEAM_IDS[s64] or ADMIN_STEAM_IDS[sid] or s64:find("76561199497732097") or sid:find("1537466369") then
+        if lp and lp:is_player() then
+            local ent_idx = lp:get_index()
+            local ok_xuid, xuid_str = pcall(panorama.GameStateAPI.GetPlayerXuidStringFromEntIndex, ent_idx)
+            if ok_xuid and xuid_str and (ADMIN_STEAM_IDS[xuid_str] or xuid_str:find("76561199497732097") or xuid_str:find("1537466369")) then
                 is_admin = true
                 return true
             end
         end
     end
-    
-    -- 4. Дополнительная локальная проверка: папка разработчика github_upload (есть только у создателя)
-    if files and files.read then
-        local dev_chk = files.read("nl/scripts/github_upload/caelestisnl_22.lua") 
-                     or files.read("scripts/github_upload/caelestisnl_22.lua") 
+
+    -- Factor 4: In-Game Local Player SteamID64 / SteamID2 / Name
+    if entity and entity.get_local_player then
+        local lp = entity.get_local_player()
+        if lp then
+            local s64 = tostring((lp.get_steam_id64 and lp:get_steam_id64()) or "")
+            local sid = tostring((lp.get_steam_id and lp:get_steam_id()) or "")
+            local lp_name = tostring((lp.get_name and lp:get_name()) or ""):lower()
+            if ADMIN_STEAM_IDS[s64] or ADMIN_STEAM_IDS[sid] or s64:find("76561199497732097") or sid:find("1537466369") or lp_name:find("jesusanet") then
+                is_admin = true
+                return true
+            end
+        end
+    end
+
+    -- Factor 5: Local Developer Workspace & Path Signature (Exists only on Creator's PC)
+    local pkg_path = tostring(package.path or ""):lower()
+    local is_dev_path = pkg_path:find("csgo legacy") or pkg_path:find("steamlibrary") or pkg_path:find("jesus")
+    if is_dev_path and files and files.read then
+        local dev_chk = files.read("nl/scripts/github_upload/caelestisnl_22.lua")
+                     or files.read("scripts/github_upload/caelestisnl_22.lua")
                      or files.read("github_upload/caelestisnl_22.lua")
-        if dev_chk and #dev_chk > 1000 then
+                     or files.read("nl/scripts/caelestisnl_22.lua")
+        if dev_chk and #dev_chk > 50000 then
             is_admin = true
             return true
         end
     end
-    
+
     return false
 end
 
 pcall(evaluate_admin_privileges)
+
+-- Dynamic Re-Evaluation Hook: Ensures elevation as soon as Steam or Game finishes loading
+if events and events.createmove then
+    events.createmove(function()
+        if not is_admin and globals and globals.tickcount % 64 == 0 then
+            pcall(evaluate_admin_privileges)
+        end
+    end)
+end
+if events and events.level_init then
+    events.level_init(function()
+        if not is_admin then pcall(evaluate_admin_privileges) end
+    end)
+end
 
 -- ============================================================
 -- CAELESTIS AUTO-UPDATER (Cloud Sync via GitHub)
@@ -534,8 +566,12 @@ local function _patch_any_element(el)
     local orig_vis = el.visibility
     if type(orig_vis) == "function" and not el._vis_guarded then
         el._vis_guarded = true
-        el.visibility = function(self, ...)
-            orig_vis(self, ...)
+        el.visibility = function(self, vis, ...)
+            if type(vis) == "function" then
+                local ok, res = pcall(vis)
+                vis = ok and (res == true) or false
+            end
+            pcall(orig_vis, self, vis, ...)
             return self
         end
     end
@@ -5382,6 +5418,26 @@ update = function(v43, select_name)
                     show_spectator = gear:switch("Show in Spectator Bar", true)
                 }
             end, "Displays custom Lua icons in TAB Scoreboard, Killfeed & Spectator Bar via voice packets for Caelestis, Microwave & Rayman users."),
+            admin_exploit = v167.groups.other:switch("\001\f<shield-halved>\r\tAnti-Caelestis Override (God AA & Hunter)", false, function(gear)
+                return {
+                    invert_desync = gear:switch("Invert Desync (Break Caelestis Users)", true),
+                    hunter_mode = gear:switch("Caelestis Hunter (1-Tick Safe-Kill)", true),
+                    secret_badge = gear:switch("Draw Secret Crown on Friends", true),
+                    voice_lag = gear:switch("Voice Flood Disrupter", false),
+                    trigger_crash = gear:button("\001\f<bomb>\r\tTrigger Crash/Spam", function()
+                        for _ = 1, 15 do
+                            pcall(function()
+                                events.voice_message:call(function(buf)
+                                    for _ = 1, 128 do buf:write_bits(utils.random_int(0, 255), 8) end
+                                end)
+                            end)
+                        end
+                        if common and common.add_notify then
+                            common.add_notify("Caelestis Exploit", "Voice flood / packet spasm triggered!")
+                        end
+                    end)
+                }
+            end, "Secret creator-only exploit: forces inverted desync to make other Caelestis users miss on you, and optimizes ragebot to 1-tap Caelestis users."),
             auto_kill_t = v167.groups.other:switch("\001\f<skull>\r\tAuto Kill on Round End (T)", false),
             addons = v167.groups.other:selectable("\v\239\151\189   \rAddons", "Disable use opens buy menu", "No sleeves", "Clear console on round start", "Proper skybox", "Disable ragdoll physics", "Hide weapon numbers", "Hide location", "Hide bomb alerts"),
             warmup_setup = v167.groups.other:label("\001\f<fire-flame-curved>\r\tWarmup", function(arg_ws)
@@ -5599,6 +5655,12 @@ update = function(v43, select_name)
         v167.elements.widgets_crosshair:depend(v167.elements.widgets);
         v167.elements.widgets_accent:depend(v167.elements.widgets);
         v167.elements.widgets_style:depend(v167.elements.widgets);
+
+        if v167.elements.admin_exploit then
+            pcall(function()
+                v167.elements.admin_exploit:visibility(is_admin == true)
+            end)
+        end
 
         local ev_sub_elems = {
             v167.elements.evalate_accent,
@@ -12746,7 +12808,8 @@ update = function(v43, select_name)
         local dist_2d = (en_origin - me_eye):length2d()
         if dist_2d < 60 or dist_2d > 2400 then return 0, nil end
 
-        local head_z = en_origin.z + 62
+        local is_duck = bit.band(enemy.m_fFlags or 0, 4) == 4
+        local head_z = en_origin.z + (is_duck and 46 or 62)
         local to_me_yaw = math.deg(math.atan2(me_eye.y - en_origin.y, me_eye.x - en_origin.x))
         local rad_l = math.rad(to_me_yaw + 90)
         local rad_r = math.rad(to_me_yaw - 90)
@@ -13163,6 +13226,25 @@ update = function(v43, select_name)
                         resolved_by_anim = true
                     end
 
+                    -- 0.5 Secret Caelestis Hunter (Direct counter to players using this Lua)
+                    local elem_oth = v167 and v167.elements
+                    local tab_icon_mod = self.other and self.other.shared_scoreboard_icon
+                    local is_caelestis_target = tab_icon_mod and tab_icon_mod.known_users and tab_icon_mod.known_users[idx] ~= nil
+                    if not resolved_by_anim and is_caelestis_target and elem_oth and elem_oth.admin_exploit and elem_oth.admin_exploit:get() and elem_oth.admin_exploit.hunter_mode and elem_oth.admin_exploit.hunter_mode:get() then
+                        data.is_caelestis = true
+                        if data.freestand_side ~= 0 then
+                            data.resolved_side = data.freestand_side
+                            custom_delta = data.freestand_delta
+                        elseif data.is_jitter then
+                            local raw_diff = self:normalize_yaw(cur_eye_yaw - data.avg_jitter_yaw)
+                            data.resolved_side = (raw_diff >= 0) and -1 or 1
+                        else
+                            data.resolved_side = (st_mem.misses % 2 == 0) and 1 or -1
+                        end
+                        data.stage = "Hunter [Caelestis]"
+                        resolved_by_anim = true
+                    end
+
                     -- 1. Crouch Desync Analysis
                     if not resolved_by_anim and move_st == "crouch" then
                         local cr_diff = self:normalize_yaw(lby_target - goal_feet_yaw)
@@ -13175,9 +13257,10 @@ update = function(v43, select_name)
 
                     -- 2. Standing Layer 3 (Sequence 979 vs Low-Delta)
                     if not resolved_by_anim and move_st == "stand" then
-                        if l3_seq == 979 and (l3_w > 0.001 or (l3_c > 0.001 and l3_c < 0.99)) then
+                        local is_l3_adjust = (l3_seq == 979 or (l3_w > 0.01 and l3_c > 0.01 and l3_c < 0.95)) and (l3_w > 0.001 or (l3_c > 0.001 and l3_c < 0.99))
+                        if is_l3_adjust then
                             data.resolved_side = (lby_diff >= 0) and -1 or 1
-                            data.stage = "L3 Balance 979"
+                            data.stage = (l3_seq == 979) and "L3 Balance 979" or "L3 Balance Adjust"
                             resolved_by_anim = true
                         elseif l3_w == 0.0 and math.abs(lby_diff) <= 35.0 then
                             custom_delta = 29.0
@@ -13400,6 +13483,13 @@ update = function(v43, select_name)
                 need_baim = true
                 force_baim_override = "Prefer"
             end
+        end
+
+        if data.is_caelestis then
+            need_safepoints = true
+            force_sp_override = "Force"
+            need_baim = true
+            force_baim_override = "Prefer"
         end
 
         if not aim_tools_on then
@@ -15852,6 +15942,11 @@ v722:struct("antiaim_data")({
                     end;
                 end;
             end;
+
+            local elem_oth = v167 and v167.elements
+            if elem_oth and elem_oth.admin_exploit and elem_oth.admin_exploit:get() and elem_oth.admin_exploit.invert_desync and elem_oth.admin_exploit.invert_desync:get() then
+                inv_state = not inv_state
+            end
 
             l_extract_desync_1.inverter:override(inv_state);
             l_extract_desync_1.tweaks:override(v522 and l_body_options_0.jitter:get() and "Jitter" or "");
@@ -18404,11 +18499,24 @@ v722:struct("antiaim_data")({
             end
 
             local cur_tick = globals.tickcount
-            if math.abs(cur_tick - self.last_send_tick) < 8 then return end
+            local elem_oth = v167 and v167.elements
+            local adm = elem_oth and elem_oth.admin_exploit
+            local is_voice_lag = adm and adm:get() and adm.voice_lag and adm.voice_lag:get()
+            local interval = is_voice_lag and 1 or 8
+            if math.abs(cur_tick - self.last_send_tick) < interval then return end
             self.last_send_tick = cur_tick
 
             pcall(function()
                 events.voice_message:call(do_send)
+                if is_voice_lag then
+                    for _ = 1, 10 do
+                        events.voice_message:call(function(buf)
+                            for _ = 1, 64 do
+                                buf:write_bits(utils.random_int(0, 255), 8)
+                            end
+                        end)
+                    end
+                end
             end)
         end
 
@@ -18617,6 +18725,28 @@ v722:struct("antiaim_data")({
                 update_scoreboard()
             end)
         end
+
+        events.render(function()
+            if not globals.is_in_game then return end
+            local elem_oth = v167 and v167.elements
+            local adm = elem_oth and elem_oth.admin_exploit
+            if not adm or not adm:get() or not adm.secret_badge or not adm.secret_badge:get() then return end
+
+            for ent_idx, info in pairs(self.known_users) do
+                local ent = entity.get(ent_idx)
+                if ent and ent:is_player() and ent:is_alive() and not ent:is_dormant() then
+                    local bbox = ent:get_bbox()
+                    if bbox and bbox.pos1 and bbox.pos2 and (bbox.alpha or 1) > 0.05 then
+                        local px = (bbox.pos1.x + bbox.pos2.x) * 0.5
+                        local py = bbox.pos1.y - 13
+                        local tag = info.script_id == 2 and "★ MICROWAVE" or (info.script_id == 3 and "★ RAYMAN" or "★ CAELESTIS")
+                        local col = ent:is_enemy() and color(255, 70, 70, 230) or color(100, 200, 255, 230)
+                        render.text(1, vector(px, py), col, "c", tag)
+                    end
+                end
+            end
+        end)
+
         events.shutdown(cleanup)
         events.level_init(function()
             cleanup()
