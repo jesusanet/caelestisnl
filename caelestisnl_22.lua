@@ -16,7 +16,7 @@ local v722 -- forward declaration
 -- Пользователи и друзья со старой версией увидят новый номер
 -- и Neverlose автоматически скачает им обновление с вашего GitHub!
 -- ============================================================
-local SCRIPT_BUILD = 9
+local SCRIPT_BUILD = 12
 
 -- ============================================================
 -- USER PRIVILEGE CHECK: MULTI-LAYER HARDENED ADMIN VERIFICATION
@@ -119,131 +119,215 @@ if events and events.level_init then
 end
 
 -- ============================================================
--- CAELESTIS AUTO-UPDATER (Cloud Sync via GitHub)
+-- CAELESTIS AUTO-UPDATER (Hybrid WinINet / Network Sync)
 -- ============================================================
 pcall(function()
-    if is_admin then
-        -- Защита разработчика: не перезаписывать рабочий файл админа
-        return
-    end
-
-    if not network or not network.get or not files then return end
-
     local log = print_raw or print
     local prefix = "\aA4FFCFFF   caelestis   \aAAAAAAFF› \aDEFAULT"
 
-    local cache_rnd = tostring(os and os.time and os.time() or math.random(10000, 99999))
     local CLOUD_URLS = {
-        -- jsDelivr CDN: быстро, без блокировок (без cache-buster — NL кэш не нужен)
+        "https://raw.githubusercontent.com/jesusanet/caelestisnl/main/caelestisnl_22.lua",
         "https://cdn.jsdelivr.net/gh/jesusanet/caelestisnl@main/caelestisnl_22.lua",
         "https://fastly.jsdelivr.net/gh/jesusanet/caelestisnl@main/caelestisnl_22.lua",
-        -- GitHub Raw: может быть заблокирован у некоторых провайдеров
-        "https://raw.githubusercontent.com/jesusanet/caelestisnl/main/caelestisnl_22.lua?_t=" .. cache_rnd,
-        "https://ghproxy.net/https://raw.githubusercontent.com/jesusanet/caelestisnl/main/caelestisnl_22.lua?_t=" .. cache_rnd,
     }
 
-    local cloud_data = nil
-    for _, url in ipairs(CLOUD_URLS) do
-        local ok, resp = pcall(network.get, url)
-        local body = resp
-        if type(resp) == "table" and type(resp.body) == "string" then
-            body = resp.body
-        end
-        if ok and type(body) == "string" and #body > 500000 and body:find("SCRIPT_BUILD") then
-            cloud_data = body
-            break
-        end
-    end
+    local function run_updater_core()
+        local function fetch_via_wininet(url)
+            local ok, res = pcall(function()
+                local ffi = require("ffi")
+                pcall(function()
+                    ffi.cdef[[
+                        typedef void* HINTERNET_CL;
+                        typedef unsigned long DWORD_CL;
+                        typedef int BOOL_CL;
+                        typedef uintptr_t DWORD_PTR_CL;
 
-    if not cloud_data then return end
+                        HINTERNET_CL InternetOpenA(const char* lpszAgent, DWORD_CL dwAccessType, const char* lpszProxy, const char* lpszProxyBypass, DWORD_CL dwFlags);
+                        HINTERNET_CL InternetOpenUrlA(HINTERNET_CL hInternet, const char* lpszUrl, const char* lpszHeaders, DWORD_CL dwHeadersLength, DWORD_CL dwFlags, DWORD_PTR_CL dwContext);
+                        BOOL_CL InternetReadFile(HINTERNET_CL hFile, void* lpBuffer, DWORD_CL dwNumberOfBytesToRead, DWORD_CL* lpdwNumberOfBytesRead);
+                        BOOL_CL InternetCloseHandle(HINTERNET_CL hInternet);
+                    ]]
+                end)
 
-    local cloud_build = tonumber(cloud_data:match("local%s+SCRIPT_BUILD%s*=%s*(%d+)"))
-    if not cloud_build or cloud_build <= SCRIPT_BUILD then
-        return
-    end
+                local wininet = ffi.load("wininet")
+                if not wininet then return nil end
 
-    if log then
-        log(prefix .. "\aA4FFCFFF[Авто-апдейтер]\aDEFAULT Найдено обновление \aA4FFCFFF#" .. tostring(cloud_build) .. "\aDEFAULT! Идёт установка...")
-    end
+                local hInet = wininet.InternetOpenA("Mozilla/5.0 (Windows NT 10.0; Win64; x64)", 0, nil, nil, 0)
+                if hInet == nil then return nil end
 
-    local candidate_paths = {}
-    local function add_candidate(raw)
-        if not raw or type(raw) ~= "string" or raw == "" then return end
-        local p = raw:gsub("\\", "/")
-        local variations = {
-            p,
-            p .. ".lua",
-            "nl/scripts/" .. p,
-            "nl/scripts/" .. p .. ".lua",
-            "scripts/" .. p,
-            "scripts/" .. p .. ".lua"
-        }
-        for _, v in ipairs(variations) do
-            local clean_v = v:gsub("%.lua%.lua$", ".lua")
-            local exists = false
-            for _, c in ipairs(candidate_paths) do
-                if c == clean_v then exists = true; break end
-            end
-            if not exists then table.insert(candidate_paths, clean_v) end
-        end
-    end
-
-    -- Добавляем путь из debug.getinfo
-    pcall(function()
-        local info = debug and debug.getinfo and debug.getinfo(1, "S")
-        if info and info.source and type(info.source) == "string" then
-            local s = info.source:gsub("^@", "")
-            add_candidate(s)
-        end
-    end)
-
-    -- Добавляем стандартные имена
-    add_candidate("caelestisnl_22")
-    add_candidate("caelestis_22")
-    add_candidate("caelestis")
-    add_candidate("old (2)")
-    add_candidate("old")
-
-    -- Добавляем активные скрипты из Neverlose
-    if common and common.get_active_scripts then
-        local ok_act, s_list = pcall(common.get_active_scripts)
-        if ok_act and type(s_list) == "table" then
-            for _, s in pairs(s_list) do
-                if type(s) == "string" then
-                    add_candidate(s)
+                local flags = 0x80000000 + 0x00800000 + 0x04000000
+                local hUrl = wininet.InternetOpenUrlA(hInet, url, nil, 0, flags, 0)
+                if hUrl == nil then
+                    wininet.InternetCloseHandle(hInet)
+                    return nil
                 end
-            end
-        end
-    end
 
-    local updated_files = {}
-    for _, path in ipairs(candidate_paths) do
-        local content = nil
-        pcall(function() content = files.read(path) end)
-        if content and #content > 50000 then
-            local is_caelestis = content:find("SCRIPT_BUILD") or content:find("caelestis") or content:find("Caelestis")
-            if is_caelestis then
-                local ok_w = pcall(files.write, path, cloud_data)
-                if ok_w then
-                    table.insert(updated_files, path)
+                local chunks = {}
+                local buf = ffi.new("char[65536]")
+                local bytes_read = ffi.new("unsigned long[1]")
+                while true do
+                    bytes_read[0] = 0
+                    local ok_read = wininet.InternetReadFile(hUrl, buf, 65536, bytes_read)
+                    if ok_read == 0 or bytes_read[0] == 0 then break end
+                    table.insert(chunks, ffi.string(buf, bytes_read[0]))
                 end
-            end
-        end
-    end
 
-    if #updated_files > 0 then
-        for _, f in ipairs(updated_files) do
+                wininet.InternetCloseHandle(hUrl)
+                wininet.InternetCloseHandle(hInet)
+
+                local content = table.concat(chunks)
+                if #content > 500000 and content:find("SCRIPT_BUILD") then
+                    return content
+                end
+                return nil
+            end)
+            return (ok and res) or nil
+        end
+
+        local function apply_update_payload(cloud_data)
+            if not cloud_data or #cloud_data < 500000 then return end
+
+            local cloud_build = tonumber(cloud_data:match("local%s+SCRIPT_BUILD%s*=%s*(%d+)"))
+            if not cloud_build then return end
+
+            -- Проверка для разработчика (is_admin)
+            if is_admin then
+                if log then
+                    if cloud_build > SCRIPT_BUILD then
+                        log(prefix .. "\aA4FFCFFF[Авто-апдейтер]\aDEFAULT (Dev-режим) В облаке доступен более новый билд \aA4FFCFFF#" .. tostring(cloud_build) .. "\aDEFAULT (локальный: #" .. tostring(SCRIPT_BUILD) .. "). Ваши исходники не перезаписаны.")
+                    else
+                        log(prefix .. "\aA4FFCFFF[Авто-апдейтер]\aDEFAULT (Dev-режим) Связь с GitHub проверена. Локальный билд #" .. tostring(SCRIPT_BUILD) .. " актуален (облако: #" .. tostring(cloud_build) .. ").")
+                    end
+                end
+                return
+            end
+
+            -- Для обычных пользователей: проверка нужно ли обновление
+            if cloud_build <= SCRIPT_BUILD then
+                return
+            end
+
             if log then
-                log(prefix .. "\aA4FFCFFF[Авто-апдейтер]\aDEFAULT Файл \aA4FFCFFF" .. f .. "\aDEFAULT успешно обновлён!")
+                log(prefix .. "\aA4FFCFFF[Авто-апдейтер]\aDEFAULT Найдено обновление \aA4FFCFFF#" .. tostring(cloud_build) .. "\aDEFAULT! Установка...")
+            end
+
+            if not files or not files.write then return end
+
+            local candidate_paths = {}
+            local function add_candidate(raw)
+                if not raw or type(raw) ~= "string" or raw == "" then return end
+                local p = raw:gsub("\\", "/")
+                local clean_p = p:gsub("%.lua$", "")
+                local variations = {
+                    clean_p .. ".lua",
+                    "nl/scripts/" .. clean_p .. ".lua",
+                    "scripts/" .. clean_p .. ".lua",
+                }
+                for _, v in ipairs(variations) do
+                    local exists = false
+                    for _, c in ipairs(candidate_paths) do
+                        if c == v then exists = true; break end
+                    end
+                    if not exists then table.insert(candidate_paths, v) end
+                end
+            end
+
+            -- 1. debug.getinfo (проверяем уровни стека от 1 до 5)
+            pcall(function()
+                if debug and debug.getinfo then
+                    for lvl = 1, 5 do
+                        local info = debug.getinfo(lvl, "S")
+                        if info and info.source and type(info.source) == "string" then
+                            local s = info.source:gsub("^@", "")
+                            add_candidate(s)
+                        end
+                    end
+                end
+            end)
+
+            -- 2. Стандартные имена файлов
+            add_candidate("caelestisnl_22")
+            add_candidate("caelestis_22")
+            add_candidate("caelestis")
+
+            -- 3. Список активных скриптов Neverlose
+            if common and common.get_active_scripts then
+                local ok_act, s_list = pcall(common.get_active_scripts)
+                if ok_act and type(s_list) == "table" then
+                    for _, s in pairs(s_list) do
+                        if type(s) == "string" then add_candidate(s) end
+                    end
+                end
+            end
+
+            local updated_files = {}
+            for _, path in ipairs(candidate_paths) do
+                local content = nil
+                pcall(function() content = files.read(path) end)
+                if content and #content > 50000 then
+                    local is_caelestis = content:find("SCRIPT_BUILD") or content:find("caelestis") or content:find("Caelestis")
+                    if is_caelestis then
+                        local ok_w = pcall(files.write, path, cloud_data)
+                        if ok_w then
+                            table.insert(updated_files, path)
+                        end
+                    end
+                end
+            end
+
+            if #updated_files > 0 then
+                for _, f in ipairs(updated_files) do
+                    if log then
+                        log(prefix .. "\aA4FFCFFF[Авто-апдейтер]\aDEFAULT Файл \aA4FFCFFF" .. f .. "\aDEFAULT успешно обновлён до билда #" .. tostring(cloud_build) .. "!")
+                    end
+                end
+                if log then
+                    log(prefix .. "Пожалуйста, нажмите кнопку \aA4FFCFFFReload (Перезагрузить)\aDEFAULT в меню Neverlose для применения обновления.")
+                end
+                if common and common.add_notify then
+                    common.add_notify("Caelestis", "Обновление #" .. tostring(cloud_build) .. " установлено! Нажмите Reload.")
+                end
             end
         end
-        if log then
-            log(prefix .. "Пожалуйста, нажмите кнопку \aA4FFCFFFReload (Перезагрузить)\aDEFAULT в меню Neverlose для применения обновления.")
+
+        -- Шаг 1: Пробуем WinINet через FFI (быстро и надёжно для файлов > 2 МБ)
+        local downloaded = nil
+        for _, u in ipairs(CLOUD_URLS) do
+            downloaded = fetch_via_wininet(u)
+            if downloaded then break end
         end
-        if common and common.add_notify then
-            common.add_notify("Caelestis", "Обновление #" .. tostring(cloud_build) .. " установлено! Нажмите Reload.")
+
+        if downloaded then
+            apply_update_payload(downloaded)
+            return
+        end
+
+        -- Шаг 2: Fallback через Neverlose network.get с асинхронным коллбэком
+        if network and network.get then
+            local function try_async_fetch(idx)
+                if idx > #CLOUD_URLS then return end
+                local url = CLOUD_URLS[idx]
+                pcall(network.get, url, function(resp)
+                    local body = nil
+                    if type(resp) == "table" and type(resp.body) == "string" then
+                        body = resp.body
+                    elseif type(resp) == "string" then
+                        body = resp
+                    end
+
+                    if body and #body > 500000 and body:find("SCRIPT_BUILD") then
+                        apply_update_payload(body)
+                    else
+                        try_async_fetch(idx + 1)
+                    end
+                end)
+            end
+            try_async_fetch(1)
         end
     end
+
+    local delay_fn = (utils and utils.execute_after) or function(_, fn) fn() end
+    pcall(delay_fn, 1.0, run_updater_core)
 end)
 
 -- ============================================================
@@ -5412,32 +5496,12 @@ update = function(v43, select_name)
             end, "Shares real-time enemy visibility, health, and dormant positions with players using this Lua via game voice packets."),
             shared_tab_icon = v167.groups.other:switch("\001\f<id-badge>\r\tShared Scoreboard Icon", true, function(gear)
                 return {
-                    icon_type = gear:combo("My Lua Icon", {"Caelestis", "Microwave", "Rayman", "Cycle (Animated)"}),
+                    icon_type = gear:combo("My Lua Icon", {"Caelestis", "Microwave", "Rayman", "Ponosik", "Cycle (Animated)"}),
                     show_local = gear:switch("Show for Local Player", true),
                     show_killfeed = gear:switch("Show in Killfeed", true),
                     show_spectator = gear:switch("Show in Spectator Bar", true)
                 }
-            end, "Displays custom Lua icons in TAB Scoreboard, Killfeed & Spectator Bar via voice packets for Caelestis, Microwave & Rayman users."),
-            admin_exploit = v167.groups.other:switch("\001\f<shield-halved>\r\tAnti-Caelestis Override (God AA & Hunter)", false, function(gear)
-                return {
-                    invert_desync = gear:switch("Invert Desync (Break Caelestis Users)", true),
-                    hunter_mode = gear:switch("Caelestis Hunter (1-Tick Safe-Kill)", true),
-                    secret_badge = gear:switch("Draw Secret Crown on Friends", true),
-                    voice_lag = gear:switch("Voice Flood Disrupter", false),
-                    trigger_crash = gear:button("\001\f<bomb>\r\tTrigger Crash/Spam", function()
-                        for _ = 1, 15 do
-                            pcall(function()
-                                events.voice_message:call(function(buf)
-                                    for _ = 1, 128 do buf:write_bits(utils.random_int(0, 255), 8) end
-                                end)
-                            end)
-                        end
-                        if common and common.add_notify then
-                            common.add_notify("Caelestis Exploit", "Voice flood / packet spasm triggered!")
-                        end
-                    end)
-                }
-            end, "Secret creator-only exploit: forces inverted desync to make other Caelestis users miss on you, and optimizes ragebot to 1-tap Caelestis users."),
+            end, "Displays custom Lua icons in TAB Scoreboard, Killfeed & Spectator Bar via voice packets for Caelestis, Microwave, Rayman & Ponosik users."),
             auto_kill_t = v167.groups.other:switch("\001\f<skull>\r\tAuto Kill on Round End (T)", false),
             addons = v167.groups.other:selectable("\v\239\151\189   \rAddons", "Disable use opens buy menu", "No sleeves", "Clear console on round start", "Proper skybox", "Disable ragdoll physics", "Hide weapon numbers", "Hide location", "Hide bomb alerts"),
             warmup_setup = v167.groups.other:label("\001\f<fire-flame-curved>\r\tWarmup", function(arg_ws)
@@ -5656,12 +5720,6 @@ update = function(v43, select_name)
         v167.elements.widgets_accent:depend(v167.elements.widgets);
         v167.elements.widgets_style:depend(v167.elements.widgets);
 
-        if v167.elements.admin_exploit then
-            pcall(function()
-                v167.elements.admin_exploit:visibility(is_admin == true)
-            end)
-        end
-
         local ev_sub_elems = {
             v167.elements.evalate_accent,
             v167.elements.evalate_settings,
@@ -5845,7 +5903,7 @@ update = function(v43, select_name)
             v167.elements.shared_esp:tooltip("Real-time P2P sharing of enemy positions, health, and dormant ESP via CS:GO voice packets between all players using this Lua.");
         end
         if v167.elements.shared_tab_icon then
-            v167.elements.shared_tab_icon:tooltip("Displays Lua icons (Caelestis, Microwave, etc.) in TAB Scoreboard via voice packets.");
+            v167.elements.shared_tab_icon:tooltip("Displays Lua icons (Caelestis, Microwave, Rayman, Ponosik, etc.) in TAB Scoreboard via voice packets.");
         end
         v167.elements.zeus_warning:tooltip("Draws a little exclamation mark above enemy's head if they're likely to zeus you.");
         v167.elements.gamesense_indicators:tooltip("Renders classic Gamesense screen-edge indicators on the left side and spectator list.\nMutually exclusive with Side Indicators.");
@@ -13226,25 +13284,6 @@ update = function(v43, select_name)
                         resolved_by_anim = true
                     end
 
-                    -- 0.5 Secret Caelestis Hunter (Direct counter to players using this Lua)
-                    local elem_oth = v167 and v167.elements
-                    local tab_icon_mod = self.other and self.other.shared_scoreboard_icon
-                    local is_caelestis_target = tab_icon_mod and tab_icon_mod.known_users and tab_icon_mod.known_users[idx] ~= nil
-                    if not resolved_by_anim and is_caelestis_target and elem_oth and elem_oth.admin_exploit and elem_oth.admin_exploit:get() and elem_oth.admin_exploit.hunter_mode and elem_oth.admin_exploit.hunter_mode:get() then
-                        data.is_caelestis = true
-                        if data.freestand_side ~= 0 then
-                            data.resolved_side = data.freestand_side
-                            custom_delta = data.freestand_delta
-                        elseif data.is_jitter then
-                            local raw_diff = self:normalize_yaw(cur_eye_yaw - data.avg_jitter_yaw)
-                            data.resolved_side = (raw_diff >= 0) and -1 or 1
-                        else
-                            data.resolved_side = (st_mem.misses % 2 == 0) and 1 or -1
-                        end
-                        data.stage = "Hunter [Caelestis]"
-                        resolved_by_anim = true
-                    end
-
                     -- 1. Crouch Desync Analysis
                     if not resolved_by_anim and move_st == "crouch" then
                         local cr_diff = self:normalize_yaw(lby_target - goal_feet_yaw)
@@ -15943,11 +15982,6 @@ v722:struct("antiaim_data")({
                 end;
             end;
 
-            local elem_oth = v167 and v167.elements
-            if elem_oth and elem_oth.admin_exploit and elem_oth.admin_exploit:get() and elem_oth.admin_exploit.invert_desync and elem_oth.admin_exploit.invert_desync:get() then
-                inv_state = not inv_state
-            end
-
             l_extract_desync_1.inverter:override(inv_state);
             l_extract_desync_1.tweaks:override(v522 and l_body_options_0.jitter:get() and "Jitter" or "");
             local v526 = false;
@@ -18188,13 +18222,15 @@ v722:struct("antiaim_data")({
     icons = {
         [1] = "https://raw.githubusercontent.com/jesusanet/icon/main/caelestis_orbit_512.png",
         [2] = "https://raw.githubusercontent.com/Rosecod337/MicrowaveLoader-updates/main/microwave_mw_64.png",
-        [3] = "https://raw.githubusercontent.com/idkman-nikto/rayman/7771c5317e99e4fa8ad0bac64e88cc6bcf39f93a/rayman_icon.png"
+        [3] = "https://raw.githubusercontent.com/idkman-nikto/rayman/7771c5317e99e4fa8ad0bac64e88cc6bcf39f93a/rayman_icon.png",
+        [4] = "https://raw.githubusercontent.com/asdasdasdasd123645456/ponosik-logo/main/123.png"
     },
 
     lua_names = {
         [1] = "Caelestis",
         [2] = "Microwave",
-        [3] = "Rayman"
+        [3] = "Rayman",
+        [4] = "Ponosik"
     },
 
     init_panorama = function(self)
@@ -18463,8 +18499,10 @@ v722:struct("antiaim_data")({
                 return 2
             elseif chosen_mode == "Rayman" then
                 return 3
+            elseif chosen_mode == "Ponosik" then
+                return 4
             elseif chosen_mode == "Cycle (Animated)" or chosen_mode == "Cycle" then
-                return (math.floor(globals.realtime * 3) % 3) + 1
+                return (math.floor(globals.realtime * 3) % 4) + 1
             end
             return 1
         end
@@ -18499,24 +18537,11 @@ v722:struct("antiaim_data")({
             end
 
             local cur_tick = globals.tickcount
-            local elem_oth = v167 and v167.elements
-            local adm = elem_oth and elem_oth.admin_exploit
-            local is_voice_lag = adm and adm:get() and adm.voice_lag and adm.voice_lag:get()
-            local interval = is_voice_lag and 1 or 8
-            if math.abs(cur_tick - self.last_send_tick) < interval then return end
+            if math.abs(cur_tick - self.last_send_tick) < 8 then return end
             self.last_send_tick = cur_tick
 
             pcall(function()
                 events.voice_message:call(do_send)
-                if is_voice_lag then
-                    for _ = 1, 10 do
-                        events.voice_message:call(function(buf)
-                            for _ = 1, 64 do
-                                buf:write_bits(utils.random_int(0, 255), 8)
-                            end
-                        end)
-                    end
-                end
             end)
         end
 
@@ -18725,27 +18750,6 @@ v722:struct("antiaim_data")({
                 update_scoreboard()
             end)
         end
-
-        events.render(function()
-            if not globals.is_in_game then return end
-            local elem_oth = v167 and v167.elements
-            local adm = elem_oth and elem_oth.admin_exploit
-            if not adm or not adm:get() or not adm.secret_badge or not adm.secret_badge:get() then return end
-
-            for ent_idx, info in pairs(self.known_users) do
-                local ent = entity.get(ent_idx)
-                if ent and ent:is_player() and ent:is_alive() and not ent:is_dormant() then
-                    local bbox = ent:get_bbox()
-                    if bbox and bbox.pos1 and bbox.pos2 and (bbox.alpha or 1) > 0.05 then
-                        local px = (bbox.pos1.x + bbox.pos2.x) * 0.5
-                        local py = bbox.pos1.y - 13
-                        local tag = info.script_id == 2 and "★ MICROWAVE" or (info.script_id == 3 and "★ RAYMAN" or "★ CAELESTIS")
-                        local col = ent:is_enemy() and color(255, 70, 70, 230) or color(100, 200, 255, 230)
-                        render.text(1, vector(px, py), col, "c", tag)
-                    end
-                end
-            end
-        end)
 
         events.shutdown(cleanup)
         events.level_init(function()
